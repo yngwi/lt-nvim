@@ -663,17 +663,13 @@ function M.build(bufnr, config)
   local ft = vim.bo[bufnr].filetype
   local b = new_builder()
 
-  if ft == "text" then
-    local text = util.buf_get_text(bufnr)
-    add_text(b, text, 0)
-  elseif ft == "markdown" then
+  if ft == "markdown" then
     local text = util.buf_get_text(bufnr)
     annotate_markdown(b, text, config)
-  else
-    -- Code file
-    if not annotate_code_buffer(b, bufnr, ft, config) then
-      return nil
-    end
+  elseif not annotate_code_buffer(b, bufnr, ft, config) then
+    -- No treesitter queries/parser for this filetype; treat as plain text
+    local text = util.buf_get_text(bufnr)
+    add_text(b, text, 0)
   end
 
   local result = finish(b)

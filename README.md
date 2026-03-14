@@ -117,7 +117,7 @@ require("lt-nvim").setup({
 
   -- Filetypes to attach to
   enabled_filetypes = {
-    "text", "markdown",
+    "text", "markdown", "gitcommit",
     "lua", "python", "rust",
     "javascript", "javascriptreact",
     "typescript", "typescriptreact",

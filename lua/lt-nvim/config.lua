@@ -13,7 +13,7 @@ local defaults = {
   enabled_rules = {},
   enabled_categories = {},
   enabled_filetypes = {
-    "text", "markdown",
+    "text", "markdown", "gitcommit",
     "lua", "python", "rust",
     "javascript", "javascriptreact",
     "typescript", "typescriptreact",

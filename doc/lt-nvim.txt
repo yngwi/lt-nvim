@@ -123,7 +123,8 @@ Options ~
 
     `enabled_filetypes`     Filetypes to attach to.
                           Type: `string[]`, Default:
-                          `{"text", "markdown", "lua", "python",`
+                          `{"text", "markdown", "gitcommit",`
+                          ` "lua", "python",`
                           ` "rust", "javascript", "javascriptreact",`
                           ` "typescript", "typescriptreact",`
                           ` "go", "java", "c", "cpp", "cs",`
