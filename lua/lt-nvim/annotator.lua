@@ -91,6 +91,7 @@ local regular_line_patterns = {
   { pattern = "^(%s*//+ ?)" },
   { pattern = "^(%s*%-%-+ ?)" },
   { pattern = "^(%s*#+ ?)" },
+  { pattern = "^(%s*%%+ ?)" },
 }
 
 --- Detect and return the comment prefix and whether it's a doc comment.
@@ -506,6 +507,7 @@ local lang_comment_prefix = {
   typescript = "//", go = "//", swift = "//", kotlin = "//", dart = "//",
   php = "//", csharp = "//",
   sql = "%-%-", haskell = "%-%-", elm = "%-%-",
+  latex = "%%", tex = "%%",
 }
 
 --- Annotate code text from a markdown fence using treesitter or regex fallback.

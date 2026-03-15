@@ -23,7 +23,7 @@ local defaults = {
     "javascript", "javascriptreact",
     "typescript", "typescriptreact",
     "go", "java", "c", "cpp", "cs",
-    "php", "bash", "sh", "html",
+    "php", "bash", "sh", "html", "tex",
   },
   user_queries = {},
 }
