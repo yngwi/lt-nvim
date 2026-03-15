@@ -27,7 +27,7 @@ an in-memory LSP server, uses treesitter to extract prose from code files
 (comments, docstrings, template strings), and reports results as native diagnostics
 with code actions.
 
-Supports both the free public API and LanguageTool Premium.
+Supports the free public API, LanguageTool Premium, and self-hosted servers.
 
 ==============================================================================
 2. REQUIREMENTS                                         *lt-nvim-requirements*
@@ -80,6 +80,23 @@ Or pass directly in setup: >lua
 Without credentials, the free API tier is used. The API endpoint is
 auto-selected based on whether credentials are present.
 
+Self-Hosted Server ~
+                                                        *lt-nvim-selfhosted*
+
+To use a self-hosted LanguageTool server, set `api_url` to your server's
+check endpoint: >lua
+    require("lt-nvim").setup({
+      api_url = "http://localhost:8081/v2/check",
+    })
+<
+The plugin automatically detects self-hosted mode when the URL doesn't
+match the known LanguageTool cloud endpoints. No credentials are needed.
+
+Self-hosted behavior:
+- Dictionary words are stored locally (server-side words API is not used)
+- Picky mode is supported (set `picky = true`)
+- All other features work identically to the cloud API
+
 Options ~
                                                         *lt-nvim-options*
 
@@ -101,7 +118,7 @@ Options ~
     `debounce_ms`           Delay in ms after last edit before checking.
                           Type: `number`, Default: `1000`
 
-    `picky`                 Enable picky mode (Premium only).
+    `picky`                 Enable picky mode (Premium and self-hosted).
                           Type: `boolean`, Default: `false`
 
     `skip_frontmatter`      Skip YAML frontmatter (--- delimited block
@@ -175,7 +192,7 @@ Accept suggestion ~
 
 Add to dictionary ~
     Premium: adds to server-side dictionary (syncs across devices).
-    Free: adds to local dictionary file.
+    Free/self-hosted: adds to local dictionary file.
     Shown as: `Add 'word' to server dictionary` (Premium)
               `Add 'word' to local dictionary` (free tier)
 

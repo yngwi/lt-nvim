@@ -49,7 +49,7 @@ local function build_post_body(annotation_json, config)
     table.insert(parts, "enabledCategories=" .. urlencode(table.concat(config.enabled_categories, ",")))
   end
 
-  if config.picky and config.api_key then
+  if config.picky and config.tier ~= "free" then
     table.insert(parts, "level=picky")
   end
 

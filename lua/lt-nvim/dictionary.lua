@@ -78,7 +78,7 @@ end
 ---@param config table  resolved config (needs api_key, username, api_url)
 ---@param callback fun(success: boolean)
 function M.add_word(word, config, callback)
-  if config.api_key and config.username then
+  if config.tier == "premium" then
     -- Premium: POST /v2/words/add (piped via stdin to hide credentials)
     local api_base = config.api_url:gsub("/v2/check$", "")
     local url = api_base .. "/v2/words/add"
@@ -251,7 +251,7 @@ end
 ---@param project_root string
 ---@return table[] filtered
 function M.filter_matches(matches, plain_text, config, project_root)
-  local is_premium = config.api_key ~= nil
+  local is_premium = config.tier == "premium"
   local pc = get_project_config(project_root)
   local result = {}
 

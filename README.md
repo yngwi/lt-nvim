@@ -4,7 +4,7 @@ LanguageTool grammar/spell checking for Neovim. Runs as an in-memory LSP
 server, uses treesitter to extract prose from code (comments, strings,
 docstrings), and reports results as native diagnostics with code actions.
 
-Supports both the free public API and LanguageTool Premium.
+Supports the free public API, LanguageTool Premium, and self-hosted servers.
 
 ## Features
 
@@ -75,6 +75,26 @@ Credentials are optional. Without them, the plugin uses the free API tier
 (lower rate limits, no `level=picky`). The API endpoint is auto-selected
 based on whether credentials are present.
 
+### Self-Hosted Server
+
+To use a self-hosted LanguageTool server, set `api_url` to your server's
+check endpoint:
+
+```lua
+require("lt-nvim").setup({
+  api_url = "http://localhost:8081/v2/check",
+})
+```
+
+The plugin automatically detects self-hosted mode when the URL doesn't match
+the known LanguageTool cloud endpoints. No credentials are needed.
+
+Self-hosted behavior:
+
+- Dictionary words are stored locally (the server-side words API is not used)
+- Picky mode is supported (set `picky = true`)
+- All other features work identically to the cloud API
+
 ### Options
 
 All options with their defaults:
@@ -97,7 +117,7 @@ require("lt-nvim").setup({
   -- Milliseconds to wait after last edit before checking
   debounce_ms = 1000,
 
-  -- Enable picky mode (Premium only, activates additional rules)
+  -- Enable picky mode (premium and self-hosted only, activates additional rules)
   picky = false,
 
   -- Skip YAML frontmatter in markdown files (--- delimited block at start)
@@ -115,7 +135,7 @@ require("lt-nvim").setup({
   -- Category IDs to explicitly enable
   enabled_categories = {},
 
-  -- Filetypes to attach to
+  -- File types to attach to
   enabled_filetypes = {
     "text", "markdown", "gitcommit",
     "lua", "python", "rust",
@@ -135,10 +155,11 @@ require("lt-nvim").setup({
 ### Diagnostics
 
 lt-nvim appears as an LSP server. Diagnostics show automatically for
-supported filetypes. Use your usual diagnostic navigation keymaps
+supported file types. Use your usual diagnostic navigation keymaps
 (`[d`, `]d`, etc.).
 
 Severity mapping:
+
 - **Error** -- spelling (TYPOS category)
 - **Warning** -- grammar
 - **Hint** -- style, punctuation, and other rules
@@ -148,28 +169,28 @@ Severity mapping:
 Trigger code actions with your usual keymap (e.g. `<leader>ca` or
 `vim.lsp.buf.code_action()`). Available actions:
 
-| Action | Description |
-|--------|-------------|
-| `'word' → 'fix'` | Replace with LT's suggestion |
-| `Add 'word' to server/local dictionary` | Premium: server-side dictionary. Free: local file |
-| `Disable rule 'RULE_ID'` | Suppress this rule for all future checks |
-| `Hide false positive` | Suppress this specific rule+sentence combination |
+| Action                                  | Description                                                   |
+| --------------------------------------- | ------------------------------------------------------------- |
+| `'word' → 'fix'`                        | Replace with LT's suggestion                                  |
+| `Add 'word' to server/local dictionary` | Premium: server-side dictionary. Free/self-hosted: local file |
+| `Disable rule 'RULE_ID'`                | Suppress this rule for all future checks                      |
+| `Hide false positive`                   | Suppress this specific rule+sentence combination              |
 
 ### Commands
 
 All commands are under `:Lt` with tab completion:
 
-| Command | Description |
-|---------|-------------|
-| `:Lt recheck` | Clear cache and re-check current buffer |
-| `:Lt toggle` | Toggle checking for current buffer |
-| `:Lt enable` | Enable checking for current buffer |
-| `:Lt disable` | Disable checking for current buffer |
+| Command           | Description                                          |
+| ----------------- | ---------------------------------------------------- |
+| `:Lt recheck`     | Clear cache and re-check current buffer              |
+| `:Lt toggle`      | Toggle checking for current buffer                   |
+| `:Lt enable`      | Enable checking for current buffer                   |
+| `:Lt disable`     | Disable checking for current buffer                  |
 | `:Lt lang <code>` | Set language for current buffer (e.g. `de`, `en-US`) |
-| `:Lt lang auto` | Reset to automatic language detection |
-| `:Lt info` | Show status (language, tier, checking state) |
+| `:Lt lang auto`   | Reset to automatic language detection                |
+| `:Lt info`        | Show status (language, tier, checking state)         |
 
-### Statusline
+## Status Line
 
 Add to lualine:
 
@@ -178,10 +199,11 @@ lualine_x = { require("lt-nvim").statusline }
 ```
 
 Shows:
+
 - `LT` -- attached, no issues
 - `LT: 3` -- 3 diagnostics
 - `LT …` -- check in progress
-- *(empty)* -- not attached
+- _(empty)_ -- not attached
 
 ### Health Check
 
@@ -284,9 +306,7 @@ override. Example:
 {
   "language": "en-US",
   "disabled_rules": ["WHITESPACE_RULE", "EN_QUOTES"],
-  "false_positives": [
-    { "rule_id": "MORFOLOGIK_RULE_EN_US", "sentence": "..." }
-  ]
+  "false_positives": [{ "rule_id": "MORFOLOGIK_RULE_EN_US", "sentence": "..." }]
 }
 ```
 
@@ -294,9 +314,9 @@ This file is safe to commit to version control if your team shares rule preferen
 
 ## Rate Limits
 
-| | Free | Premium |
-|---|------|---------|
-| Requests/min | 20 | 80 |
+|                | Free   | Premium |
+| -------------- | ------ | ------- |
+| Requests/min   | 20     | 80      |
 | Characters/min | 75,000 | 300,000 |
 
 ## License

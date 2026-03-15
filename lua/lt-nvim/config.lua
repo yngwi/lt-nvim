@@ -1,5 +1,10 @@
 local M = {}
 
+local CLOUD_URLS = {
+  ["https://api.languagetool.org/v2/check"] = true,
+  ["https://api.languagetoolplus.com/v2/check"] = true,
+}
+
 local defaults = {
   api_url = nil, -- auto-selected based on credentials
   language = "auto",
@@ -63,6 +68,15 @@ function M.resolve(opts)
     else
       config.api_url = "https://api.languagetool.org/v2/check"
     end
+  end
+
+  -- Derive tier: premium > selfhosted > free
+  if config.api_key then
+    config.tier = "premium"
+  elseif not CLOUD_URLS[config.api_url] then
+    config.tier = "selfhosted"
+  else
+    config.tier = "free"
   end
 
   return config

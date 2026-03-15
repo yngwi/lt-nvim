@@ -273,7 +273,7 @@ function M.create(dispatchers)
       local word = entry.matched_word
       local is_spelling = word and #word > 0 and not word:match("%s")
       if is_spelling then
-        local dict_label = config.api_key and "server" or "local"
+        local dict_label = config.tier == "premium" and "server" or "local"
         table.insert(actions, {
           title = string.format("Add '%s' to %s dictionary", word, dict_label),
           kind = "quickfix",
@@ -510,7 +510,7 @@ function M.create(dispatchers)
         vim.notify(string.format(
           "lt-nvim: %s | %s tier | lang=%s",
           status,
-          config.api_key and "Premium" or "Free",
+          config.tier == "premium" and "Premium" or config.tier == "selfhosted" and "Self-hosted" or "Free",
           effective_lang
         ), vim.log.levels.INFO)
       end)
