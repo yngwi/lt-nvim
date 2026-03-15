@@ -508,6 +508,7 @@ local lang_comment_prefix = {
   php = "//", csharp = "//",
   sql = "%-%-", haskell = "%-%-", elm = "%-%-",
   latex = "%%", tex = "%%",
+  rst = "%.%.", typst = "//",
 }
 
 --- Annotate code text from a markdown fence using treesitter or regex fallback.
@@ -654,6 +655,180 @@ local function annotate_markdown(b, buf_text, config)
 end
 
 -------------------------------------------------------------------------------
+-- Org-mode annotation
+-------------------------------------------------------------------------------
+
+--- Org-mode TODO keywords (treated as markup in headings).
+local org_todo_keywords = {
+  TODO = true, DONE = true, NEXT = true, WAIT = true, WAITING = true,
+  HOLD = true, CANCELLED = true, CANCELED = true,
+}
+
+--- Build annotation for an org-mode buffer.
+---@param b table  builder
+---@param buf_text string
+---@param config table
+local function annotate_org(b, buf_text, config)
+  local lines = vim.split(buf_text, "\n", { plain = true })
+  local in_src = false
+  local src_lang = nil
+  local src_lines = {}
+  local src_content_start = 0
+  local in_drawer = false
+  local byte_pos = 0
+
+  for i, line in ipairs(lines) do
+    local line_byte_len = #line + 1
+    local lower = line:lower()
+
+    if i > 1 then
+      if in_drawer then
+        add_markup(b, "\n", "")
+      else
+        add_markup(b, "\n", "\n")
+      end
+    end
+
+    -- Source block close
+    if in_src and lower:match("^%s*#%+end_src%s*$") then
+      if #src_lines > 0 and src_lang and src_lang ~= "" then
+        local code_text = table.concat(src_lines, "\n")
+        annotate_fenced_code(b, code_text, src_content_start, src_lang, config)
+        add_markup(b, "\n", "")
+      end
+      add_markup(b, line, "\n\n")
+      in_src = false
+      src_lines = {}
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Accumulate source block lines
+    if in_src then
+      table.insert(src_lines, line)
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Source block open: #+begin_src lang
+    if lower:match("^%s*#%+begin_src") then
+      add_markup(b, line, "\n\n")
+      in_src = true
+      src_lang = line:match("^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)") or ""
+      src_lines = {}
+      src_content_start = byte_pos + line_byte_len
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Other blocks (#+begin_example, #+begin_quote, etc.)
+    if lower:match("^%s*#%+begin_") then
+      add_markup(b, line, "\n\n")
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+    if lower:match("^%s*#%+end_") then
+      add_markup(b, line, "\n\n")
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Drawer open (:PROPERTIES:, :LOGBOOK:, etc.)
+    if not in_drawer and line:match("^%s*:[A-Z]+:%s*$") then
+      in_drawer = true
+      add_markup(b, line, "")
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Drawer close
+    if in_drawer then
+      if lower:match("^%s*:end:%s*$") then
+        in_drawer = false
+      end
+      add_markup(b, line, "")
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Directives (#+title:, #+author:, etc.)
+    if line:match("^%s*#%+") then
+      add_markup(b, line, "")
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Comments (# ...)
+    if line:match("^%s*#%s") or line:match("^%s*#$") then
+      local prefix = line:match("^(%s*#%s?)")
+      if prefix then
+        add_markup(b, prefix, "")
+        local content = line:sub(#prefix + 1)
+        if vim.trim(content) ~= "" then
+          add_text(b, content, byte_pos + #prefix)
+        end
+      else
+        add_markup(b, line, "")
+      end
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Headings (* TODO [#A] Title :tag1:tag2:)
+    local stars = line:match("^(%*+)%s")
+    if stars then
+      local after_stars = line:sub(#stars + 1)
+      add_markup(b, stars, "")
+
+      -- Strip leading space
+      local sp = after_stars:match("^(%s+)")
+      if sp then
+        add_markup(b, sp, "")
+        after_stars = after_stars:sub(#sp + 1)
+      end
+
+      -- Strip TODO keyword
+      local word = after_stars:match("^(%u+)%s")
+      if word and org_todo_keywords[word] then
+        add_markup(b, word, "")
+        after_stars = after_stars:sub(#word + 1)
+        local sp2 = after_stars:match("^(%s+)")
+        if sp2 then
+          add_markup(b, sp2, "")
+          after_stars = after_stars:sub(#sp2 + 1)
+        end
+      end
+
+      -- Strip priority cookie [#A]
+      local prio = after_stars:match("^(%[#.%]%s*)")
+      if prio then
+        add_markup(b, prio, "")
+        after_stars = after_stars:sub(#prio + 1)
+      end
+
+      -- Strip trailing tags :tag1:tag2:
+      local title, tags = after_stars:match("^(.-)(%s+:[%w_@#%%:]+:%s*)$")
+      if title and tags then
+        if vim.trim(title) ~= "" then
+          add_text(b, title, byte_pos + #line - #after_stars)
+        end
+        add_markup(b, tags, "")
+      elseif vim.trim(after_stars) ~= "" then
+        add_text(b, after_stars, byte_pos + #line - #after_stars)
+      end
+
+      byte_pos = byte_pos + line_byte_len
+      goto continue
+    end
+
+    -- Regular prose
+    add_text(b, line, byte_pos)
+    byte_pos = byte_pos + line_byte_len
+    ::continue::
+  end
+end
+
+-------------------------------------------------------------------------------
 -- Public API
 -------------------------------------------------------------------------------
 
@@ -668,6 +843,9 @@ function M.build(bufnr, config)
   if ft == "markdown" then
     local text = util.buf_get_text(bufnr)
     annotate_markdown(b, text, config)
+  elseif ft == "org" then
+    local text = util.buf_get_text(bufnr)
+    annotate_org(b, text, config)
   elseif not annotate_code_buffer(b, bufnr, ft, config) then
     -- No treesitter queries/parser for this filetype; treat as plain text
     local text = util.buf_get_text(bufnr)

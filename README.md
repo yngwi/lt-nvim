@@ -13,6 +13,8 @@ Supports the free public API, LanguageTool Premium, and self-hosted servers.
 - Extracts prose from code files via treesitter (comments, docstrings, template strings)
 - Doc comment `@tag` handling (strips tag prefixes, checks only descriptions)
 - Markdown support with YAML frontmatter skipping and comment checking inside fenced code blocks
+- Org-mode support with heading/drawer/directive handling and source block comment extraction
+- LaTeX, reStructuredText, and Typst support via treesitter
 - Uses the [AnnotatedText](https://languagetool.org/http-api/) API to preserve document structure
 - Per-buffer caching
 - Statusline component
@@ -143,6 +145,8 @@ require("lt-nvim").setup({
     "typescript", "typescriptreact",
     "go", "java", "c", "cpp", "cs",
     "php", "bash", "sh", "html",
+    "tex", "plaintex", "rst", "typst",
+    "mail", "org", "help",
   },
 
   -- Additional treesitter queries per language
