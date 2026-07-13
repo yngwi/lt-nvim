@@ -3,6 +3,11 @@ local M = {}
 -- Per-buffer job state (one job per buffer, no queue)
 local jobs = {} -- bufnr → job_id
 
+-- Per-buffer "work outstanding" flag: set when an edit schedules a (debounced)
+-- check, cleared once diagnostics are published. Lets the statusline show
+-- progress during the debounce window, before the curl job actually starts.
+local pending = {} -- bufnr → true
+
 --- Percent-encode a string for application/x-www-form-urlencoded.
 ---@param str string
 ---@return string
@@ -188,6 +193,25 @@ end
 ---@return boolean
 function M.is_checking(bufnr)
   return jobs[bufnr] ~= nil
+end
+
+--- Mark that a check has been scheduled (e.g. on an edit) but not yet published.
+---@param bufnr number
+function M.mark_pending(bufnr)
+  pending[bufnr] = true
+end
+
+--- Clear the pending flag (call once diagnostics have been published).
+---@param bufnr number
+function M.clear_pending(bufnr)
+  pending[bufnr] = nil
+end
+
+--- Returns true if a check is either scheduled or in progress for the buffer.
+---@param bufnr number
+---@return boolean
+function M.is_busy(bufnr)
+  return jobs[bufnr] ~= nil or pending[bufnr] ~= nil
 end
 
 return M

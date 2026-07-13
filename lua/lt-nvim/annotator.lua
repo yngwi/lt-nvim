@@ -13,6 +13,9 @@ local lang_aliases = {
   jsx = "javascript", tsx = "typescript",
   py = "python", rb = "ruby", rs = "rust",
   yml = "yaml",
+  ["c++"] = "cpp", cxx = "cpp", cc = "cpp",
+  ["c#"] = "cs", csharp = "cs",
+  objc = "c", ["objective-c"] = "c",
 }
 
 local function resolve_lang(lang)
@@ -24,17 +27,21 @@ end
 -------------------------------------------------------------------------------
 
 --- Accumulates annotation entries and builds annotation_map.
---- LT match offsets count ALL bytes: both markup and text entries concatenated.
---- The annotation_map maps these full offsets to buffer byte positions.
---- `full_offset` tracks position in the full concatenated content (what LT uses for offsets).
---- `buf_pos` tracks position in the buffer.
+--- LT match offsets count both markup and text entries concatenated, measured in
+--- UTF-16 code units (LanguageTool is Java; offsets are String char indices).
+--- Each markup/text entry contributes the UTF-16 length of its own content
+--- (markup contributes its markup content, NOT its interpretAs).
+--- The annotation_map maps these full (UTF-16) offsets to buffer byte positions.
+--- `full_offset` tracks position in LT's offset space (UTF-16 code units).
+--- `buf_pos` tracks position in the buffer (bytes).
 local function new_builder()
   return {
     annotation = {},
-    annotation_map = {},  -- { full_offset, buffer_byte }[]
-    full_offset = 0,      -- offset in markup+text concatenation (LT's offset space)
+    annotation_map = {},  -- { full_offset, buffer_byte, is_text, len, text }[]
+    full_offset = 0,      -- offset in markup+text concatenation, UTF-16 units (LT's space)
     buf_pos = 0,          -- current buffer byte position
-    plain_parts = {},     -- text entries only (for caching/diffing)
+    plain_parts = {},     -- text entries only (for empty-buffer detection)
+    full_parts = {},      -- markup + text, in order (for cache invalidation)
   }
 end
 
@@ -44,10 +51,13 @@ end
 ---@param buffer_byte number  byte offset of this text in the buffer
 local function add_text(b, text, buffer_byte)
   if #text == 0 then return end
+  local char_len = vim.str_utfindex(text, "utf-16")
   table.insert(b.annotation, { text = text })
-  table.insert(b.annotation_map, { full_offset = b.full_offset, buffer_byte = buffer_byte, is_text = true, len = #text })
+  -- Store the text so LT (UTF-16) offsets landing inside it can be converted to bytes.
+  table.insert(b.annotation_map, { full_offset = b.full_offset, buffer_byte = buffer_byte, is_text = true, len = char_len, text = text })
   table.insert(b.plain_parts, text)
-  b.full_offset = b.full_offset + #text
+  table.insert(b.full_parts, text)
+  b.full_offset = b.full_offset + char_len
   b.buf_pos = buffer_byte + #text
 end
 
@@ -62,9 +72,11 @@ local function add_markup(b, markup, interpret_as)
     entry.interpretAs = interpret_as
   end
   table.insert(b.annotation, entry)
-  -- Markup bytes ARE counted in LT's offset space
-  table.insert(b.annotation_map, { full_offset = b.full_offset, buffer_byte = b.buf_pos, is_text = false, len = #markup })
-  b.full_offset = b.full_offset + #markup
+  -- Markup content IS counted in LT's offset space (by its own UTF-16 length).
+  local char_len = vim.str_utfindex(markup, "utf-16")
+  table.insert(b.annotation_map, { full_offset = b.full_offset, buffer_byte = b.buf_pos, is_text = false, len = char_len })
+  table.insert(b.full_parts, markup)
+  b.full_offset = b.full_offset + char_len
   b.buf_pos = b.buf_pos + #markup
 end
 
@@ -73,7 +85,8 @@ local function finish(b)
   return {
     annotation = b.annotation,
     annotation_map = b.annotation_map,
-    plain_text = table.concat(b.plain_parts), -- text entries only, for cache diffing
+    plain_text = table.concat(b.plain_parts), -- text only, to detect "no prose to check"
+    full_text = table.concat(b.full_parts),   -- markup + text, cache key (see checker.lua)
   }
 end
 
@@ -505,7 +518,7 @@ local lang_comment_prefix = {
   lua = "%-%-",
   rust = "//", c = "//", cpp = "//", java = "//", javascript = "//",
   typescript = "//", go = "//", swift = "//", kotlin = "//", dart = "//",
-  php = "//", csharp = "//",
+  php = "//", csharp = "//", cs = "//",
   sql = "%-%-", haskell = "%-%-", elm = "%-%-",
   latex = "%%", tex = "%%",
   rst = "%.%.", typst = "//",
@@ -568,9 +581,11 @@ end
 ---@return string|nil fence_lang, boolean is_open, string|nil fence_char
 local function match_fence(line, in_fence, fence_char)
   if not in_fence then
-    local lang = line:match("^%s?%s?%s?```(%w*)")
+    -- Capture the full first token of the info string (e.g. "c++", "c#",
+    -- "objective-c"), not just its leading word characters.
+    local lang = line:match("^%s?%s?%s?```([^%s`]*)")
     if lang then return lang, true, "`" end
-    lang = line:match("^%s?%s?%s?~~~(%w*)")
+    lang = line:match("^%s?%s?%s?~~~(%S*)")
     if lang then return lang, true, "~" end
   else
     local close_char = fence_char == "`" and "`" or "~"

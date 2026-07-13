@@ -146,7 +146,7 @@ require("lt-nvim").setup({
     "go", "java", "c", "cpp", "cs",
     "php", "bash", "sh", "html",
     "tex", "plaintex", "rst", "typst",
-    "mail", "org", "help",
+    "mail", "org",
   },
 
   -- Additional treesitter queries per language

@@ -86,14 +86,28 @@ function M.add_word(word, config, callback)
     local body = "word=" .. vim.uri_encode(word, "rfc2396")
       .. "&username=" .. vim.uri_encode(config.username, "rfc2396")
       .. "&apiKey=" .. vim.uri_encode(config.api_key, "rfc2396")
+    local stdout_data = {}
     local job_id = vim.fn.jobstart(args, {
       stdout_buffered = true,
+      on_stdout = function(_, data)
+        if data then vim.list_extend(stdout_data, data) end
+      end,
       on_exit = function(_, exit_code)
         vim.schedule(function()
-          if exit_code == 0 then
+          -- curl exits 0 even on HTTP 4xx (no -f), so success must be confirmed
+          -- from the response body: LT returns {"added": true} on success.
+          local raw = vim.trim(table.concat(stdout_data, "\n"))
+          local ok, resp = pcall(vim.json.decode, raw)
+          if exit_code == 0 and ok and type(resp) == "table" and resp.added == true then
             callback(true)
           else
-            vim.notify("lt-nvim: failed to add word to server dictionary", vim.log.levels.WARN)
+            local msg = "unknown error"
+            if ok and type(resp) == "table" and (resp.message or resp.error) then
+              msg = resp.message or resp.error
+            elseif raw ~= "" then
+              msg = raw:sub(1, 200)
+            end
+            vim.notify("lt-nvim: failed to add word to server dictionary: " .. msg, vim.log.levels.WARN)
             callback(false)
           end
         end)
@@ -102,6 +116,11 @@ function M.add_word(word, config, callback)
     if job_id > 0 then
       vim.fn.chansend(job_id, body)
       vim.fn.chanclose(job_id, "stdin")
+    else
+      vim.schedule(function()
+        vim.notify("lt-nvim: failed to start curl", vim.log.levels.ERROR)
+        callback(false)
+      end)
     end
   else
     -- Free: local dictionary
@@ -243,15 +262,13 @@ end
 -- Filtering
 -------------------------------------------------------------------------------
 
---- Filter matches: remove disabled rules, false positives, and local dictionary words.
---- For Premium users, dictionary filtering is handled server-side.
+--- Filter matches: remove disabled rules and hidden false positives.
+--- Local-dictionary suppression happens later in publish_diagnostics, where the
+--- matched word can be extracted correctly from the buffer (see server.lua).
 ---@param matches table[]  normalized matches
----@param plain_text string  the text LT checked (for extracting matched words)
----@param config table
 ---@param project_root string
 ---@return table[] filtered
-function M.filter_matches(matches, plain_text, config, project_root)
-  local is_premium = config.tier == "premium"
+function M.filter_matches(matches, project_root)
   local pc = get_project_config(project_root)
   local result = {}
 
@@ -264,14 +281,6 @@ function M.filter_matches(matches, plain_text, config, project_root)
     -- Skip false positives
     if M.is_false_positive(match.rule_id, match.sentence, project_root) then
       goto continue
-    end
-
-    -- Skip local dictionary words (free tier only; Premium handles it server-side)
-    if not is_premium and (match.category == "TYPOS" or match.rule_id:match("^MORFOLOGIK") or match.rule_id:match("^HUNSPELL")) then
-      local matched_word = plain_text:sub(match.offset + 1, match.offset + match.length)
-      if M.has_local_word(matched_word) then
-        goto continue
-      end
     end
 
     table.insert(result, match)

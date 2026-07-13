@@ -155,7 +155,7 @@ function M.statusline()
     return ""
   end
 
-  if api.is_checking(bufnr) then
+  if api.is_busy(bufnr) then
     return "LT …"
   end
 

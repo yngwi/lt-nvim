@@ -17,8 +17,11 @@ function M.check(bufnr, config, cache, project_root, on_done)
     return
   end
 
-  -- Cache check: if the text content hasn't changed, reuse cached matches
-  if cache.plain_text and cache.plain_text == result.plain_text and cache.matches then
+  -- Cache check: reuse cached matches only when the ENTIRE annotated content
+  -- (markup + text) is unchanged. Keying on prose alone would reuse matches
+  -- whose LT offsets are stale after a markup-only edit (e.g. editing code above
+  -- a flagged comment), placing diagnostics in the wrong spot.
+  if cache.full_text and cache.full_text == result.full_text and cache.matches then
     on_done(cache.matches, result.annotation_map, cache.detected_lang)
     return
   end
@@ -35,11 +38,12 @@ function M.check(bufnr, config, cache, project_root, on_done)
   end
 
   api.check(bufnr, annotation_json, merged_config, function(matches, detected_lang)
-    -- Post-filter: dictionary words, disabled rules, false positives
-    matches = dictionary.filter_matches(matches, result.plain_text, config, project_root)
+    -- Post-filter: disabled rules and hidden false positives.
+    -- (Local-dictionary suppression happens in publish_diagnostics.)
+    matches = dictionary.filter_matches(matches, project_root)
 
     -- Update cache
-    cache.plain_text = result.plain_text
+    cache.full_text = result.full_text
     cache.matches = matches
     cache.annotation_map = result.annotation_map
     cache.detected_lang = detected_lang
@@ -55,7 +59,7 @@ end
 ---@param project_root string
 ---@param on_done fun(matches: table[], annotation_map: table[], detected_lang: string|nil)
 function M.force_check(bufnr, config, cache, project_root, on_done)
-  cache.plain_text = nil
+  cache.full_text = nil
   cache.matches = nil
   cache.annotation_map = nil
   cache.detected_lang = nil

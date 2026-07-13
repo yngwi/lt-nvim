@@ -6,9 +6,12 @@ local util = require("lt-nvim.util")
 local M = {}
 
 --- Look up annotation_map to convert an LT offset to a buffer byte.
---- LT offsets count all bytes (markup + text) in the annotation.
----@param annotation_map table[]  sorted list of { full_offset, buffer_byte }
----@param lt_offset number
+--- LT offsets count markup + text in the annotation, in UTF-16 code units.
+--- For a text entry, the UTF-16 offset within it is converted back to a byte
+--- offset into that entry's text; markup entries (where matches never land after
+--- clamping) fall back to treating the delta as bytes.
+---@param annotation_map table[]  sorted list of { full_offset, buffer_byte, is_text, len, text }
+---@param lt_offset number  offset in UTF-16 code units
 ---@return number buffer_byte
 local function map_to_buffer_byte(annotation_map, lt_offset)
   local entry = annotation_map[1]
@@ -19,7 +22,11 @@ local function map_to_buffer_byte(annotation_map, lt_offset)
       break
     end
   end
-  return entry.buffer_byte + (lt_offset - entry.full_offset)
+  local char_within = lt_offset - entry.full_offset
+  if entry.is_text and entry.text then
+    return entry.buffer_byte + vim.str_byteindex(entry.text, "utf-16", char_within, false)
+  end
+  return entry.buffer_byte + char_within
 end
 
 --- Create the in-memory LSP server.
@@ -48,6 +55,13 @@ function M.create(dispatchers)
   -- Diagnostic publishing
   ---------------------------------------------------------------------------
 
+  --- True if a match is a spelling-type match eligible for local-dictionary suppression.
+  local function is_spelling_match(match)
+    return match.category == "TYPOS"
+      or match.rule_id:match("^MORFOLOGIK")
+      or match.rule_id:match("^HUNSPELL")
+  end
+
   local function publish_diagnostics(uri, matches, annotation_map)
     local buf = buffers[uri]
     if not buf or not buf.enabled then return end
@@ -55,6 +69,7 @@ function M.create(dispatchers)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     if not annotation_map or #annotation_map == 0 then return end
 
+    local config = get_config()
     local diagnostics = {}
     local stored_matches = {}
     local buf_text = util.buf_get_text(bufnr)
@@ -105,6 +120,15 @@ function M.create(dispatchers)
 
       -- Extract the matched word from the buffer
       local matched_word = buf_text:sub(start_buf_byte + 1, end_buf_byte)
+
+      -- Suppress spelling matches for words in the local dictionary.
+      -- (Premium uses a server-side dictionary, so no client-side filtering there.)
+      if config.tier ~= "premium"
+        and is_spelling_match(match)
+        and not matched_word:match("%s")
+        and dictionary.has_local_word(matched_word) then
+        goto next_match
+      end
 
       -- Adjust replacements: when range was clamped (markup bytes removed),
       -- replacements may have trailing/leading whitespace that no longer applies.
@@ -172,6 +196,7 @@ function M.create(dispatchers)
 
     local config = get_effective_config(buf)
     checker.check(bufnr, config, buf.cache, buf.project_root, function(matches, annotation_map, detected_lang)
+      api.clear_pending(bufnr)
       if not buffers[uri] or not vim.api.nvim_buf_is_valid(bufnr) then return end
       if detected_lang then
         buf.language = detected_lang
@@ -210,6 +235,7 @@ function M.create(dispatchers)
     if not buf then return end
     buf.cancel_fn()
     api.cancel(buf.bufnr)
+    api.clear_pending(buf.bufnr)
     buffers[uri] = nil
   end
 
@@ -324,6 +350,7 @@ function M.create(dispatchers)
     if not buf then return end
     local cfg = get_effective_config(buf)
     checker.force_check(buf.bufnr, cfg, buf.cache, buf.project_root, function(matches, amap, detected_lang)
+      api.clear_pending(buf.bufnr)
       if buffers[uri] and vim.api.nvim_buf_is_valid(buf.bufnr) then
         if detected_lang then buf.language = detected_lang end
         publish_diagnostics(uri, matches, amap)
@@ -425,6 +452,7 @@ function M.create(dispatchers)
       local uri = params.textDocument.uri
       local buf = buffers[uri]
       if buf and buf.enabled then
+        api.mark_pending(buf.bufnr)
         buf.check_fn()
       end
     elseif method == "textDocument/didSave" then
@@ -457,6 +485,7 @@ function M.create(dispatchers)
       if buf then
         buf.enabled = false
         api.cancel(buf.bufnr)
+        api.clear_pending(buf.bufnr)
         dispatchers.notification("textDocument/publishDiagnostics", {
           uri = uri,
           diagnostics = {},

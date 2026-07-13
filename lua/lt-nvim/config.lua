@@ -25,7 +25,7 @@ local defaults = {
     "go", "java", "c", "cpp", "cs",
     "php", "bash", "sh", "html",
     "tex", "plaintex", "rst", "typst",
-    "mail", "org", "help",
+    "mail", "org",
   },
   user_queries = {},
 }
