@@ -4,6 +4,7 @@ local api = require("lt-nvim.api")
 local M = {}
 
 local resolved_config = nil
+local registered = false
 
 --- Notify the lt-nvim LSP server attached to the current buffer.
 ---@return boolean success true if a server was found
@@ -63,10 +64,33 @@ function M.is_setup()
   return resolved_config ~= nil
 end
 
+--- Register and enable the in-memory LSP server. Idempotent.
+--- Called from setup() so attach works regardless of load timing; also invoked
+--- as a fallback from plugin/lt-nvim.lua for configs that never call setup().
+function M.register_lsp()
+  if registered then return end
+  registered = true
+
+  vim.lsp.config("lt-nvim", {
+    name = "lt-nvim",
+    cmd = require("lt-nvim.server").create,
+    filetypes = M.get_filetypes(),
+    root_markers = {},
+    single_file_support = true,
+  })
+
+  vim.lsp.enable("lt-nvim")
+end
+
 --- Set up the plugin. Must be called before the LSP server starts.
 ---@param opts table|nil
 function M.setup(opts)
   resolved_config = config_mod.resolve(opts)
+
+  -- Register here (not only from plugin/lt-nvim.lua's UIEnter/VeryLazy autocmds)
+  -- so attach works even when the plugin is lazy-loaded after those startup
+  -- events have already fired. Uses the now-resolved enabled_filetypes.
+  M.register_lsp()
 
   if vim.fn.executable("curl") ~= 1 then
     vim.notify("lt-nvim: curl not found on PATH", vim.log.levels.ERROR)

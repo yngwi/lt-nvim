@@ -8,6 +8,10 @@ local jobs = {} -- bufnr → job_id
 -- progress during the debounce window, before the curl job actually starts.
 local pending = {} -- bufnr → true
 
+-- Job IDs we stopped on purpose (supersede/disable/close). Their on_exit fires
+-- with a non-zero code, which we must NOT report as a failure.
+local cancelled = {} -- job_id → true
+
 --- Percent-encode a string for application/x-www-form-urlencoded.
 ---@param str string
 ---@return string
@@ -95,7 +99,9 @@ function M.check(bufnr, annotation_json, config, on_done)
   local args = { "curl", "-s", "--max-time", "30", "--connect-timeout", "10", "-X", "POST", config.api_url, "--data-binary", "@-" }
   local stdout_data = {}
 
-  local job_id = vim.fn.jobstart(args, {
+  -- Declared before jobstart so on_exit can reference this job's own id.
+  local job_id
+  job_id = vim.fn.jobstart(args, {
     stdout_buffered = true,
     on_stdout = function(_, data)
       if data then
@@ -103,7 +109,17 @@ function M.check(bufnr, annotation_json, config, on_done)
       end
     end,
     on_exit = function(_, exit_code)
-      jobs[bufnr] = nil
+      -- Intentionally stopped (superseded by a newer check, or the buffer was
+      -- disabled/closed): stay silent and don't invoke on_done.
+      if cancelled[job_id] then
+        cancelled[job_id] = nil
+        return
+      end
+
+      -- Only clear the slot if it still points at us (a newer job may own it).
+      if jobs[bufnr] == job_id then
+        jobs[bufnr] = nil
+      end
 
       if not vim.api.nvim_buf_is_valid(bufnr) then
         return
@@ -182,8 +198,11 @@ end
 --- Cancel any in-flight API work for a buffer.
 ---@param bufnr number
 function M.cancel(bufnr)
-  if jobs[bufnr] then
-    pcall(vim.fn.jobstop, jobs[bufnr])
+  local id = jobs[bufnr]
+  if id then
+    -- Mark before stopping so the resulting on_exit is treated as intentional.
+    cancelled[id] = true
+    pcall(vim.fn.jobstop, id)
     jobs[bufnr] = nil
   end
 end

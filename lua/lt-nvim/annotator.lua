@@ -594,14 +594,76 @@ local function match_fence(line, in_fence, fence_char)
   return nil, false, nil
 end
 
---- Build annotation for a markdown buffer.
+--- True if a line is a GFM table delimiter row, e.g. "| --- | :--: |".
+--- Requires a pipe so we don't mistake a thematic break / setext underline
+--- ("---") for a table.
+---@param line string
+---@return boolean
+local function is_table_delimiter_row(line)
+  if not line:find("|", 1, true) then return false end
+  local s = vim.trim(line)
+  return s:match("^[|%-:%s]+$") ~= nil and s:find("%-") ~= nil
+end
+
+--- True if a line looks like a table row (contains a pipe).
+---@param line string
+---@return boolean
+local function is_table_row(line)
+  return line:find("|", 1, true) ~= nil
+end
+
+--- Annotate a single table row: pipes and per-cell padding whitespace become
+--- markup, only the trimmed cell content becomes text. This stops LanguageTool
+--- from flagging alignment whitespace (WHITESPACE_RULE), pipes, and dashes,
+--- while still checking the actual cell prose. Each pipe is interpreted as a
+--- newline so adjacent cells are checked as separate segments.
+---@param b table  builder
+---@param line string
+---@param base_byte number  buffer byte offset of the line start
+local function annotate_table_row(b, line, base_byte)
+  local n = #line
+  local pos = 1
+  while pos <= n do
+    if line:sub(pos, pos) == "|" then
+      add_markup(b, "|", "\n")
+      pos = pos + 1
+    else
+      local cell_start = pos
+      while pos <= n and line:sub(pos, pos) ~= "|" do
+        -- Treat an escaped pipe (\|) as cell content, not a boundary.
+        if line:sub(pos, pos) == "\\" and line:sub(pos + 1, pos + 1) == "|" then
+          pos = pos + 2
+        else
+          pos = pos + 1
+        end
+      end
+      local cell = line:sub(cell_start, pos - 1)
+      local lead = cell:match("^%s*")
+      if #lead == #cell then
+        -- Whole cell is whitespace (empty cell) — all markup.
+        add_markup(b, cell, "")
+      else
+        local trail = cell:match("%s*$")
+        local content = cell:sub(#lead + 1, #cell - #trail)
+        if #lead > 0 then add_markup(b, lead, "") end
+        add_text(b, content, base_byte + (cell_start - 1) + #lead)
+        if #trail > 0 then add_markup(b, trail, "") end
+      end
+    end
+  end
+end
+
+--- Build annotation for a markdown buffer using a line-based parser.
+--- Fallback for when the `markdown` treesitter parser is unavailable; the
+--- treesitter path (annotate_markdown_ts) is preferred and far more accurate.
 ---@param b table  builder
 ---@param buf_text string
 ---@param config table
-local function annotate_markdown(b, buf_text, config)
+local function annotate_markdown_regex(b, buf_text, config)
   local lines = vim.split(buf_text, "\n", { plain = true })
   local in_fence = false
   local in_frontmatter = false
+  local in_table = false
   local fence_lang = nil
   local fence_char = nil
   local fence_lines = {}
@@ -660,13 +722,263 @@ local function annotate_markdown(b, buf_text, config)
       fence_lines = {}
     elseif in_fence then
       table.insert(fence_lines, line)
+    elseif in_table and is_table_row(line) then
+      -- Continuing an open table.
+      if is_table_delimiter_row(line) then
+        add_markup(b, line, "")
+      else
+        annotate_table_row(b, line, byte_pos)
+      end
+    elseif not in_table and is_table_row(line)
+      and lines[i + 1] and is_table_delimiter_row(lines[i + 1]) then
+      -- Header row: a table row directly followed by a delimiter row starts a table.
+      in_table = true
+      annotate_table_row(b, line, byte_pos)
     else
+      in_table = false
       add_text(b, line, byte_pos)
     end
 
     byte_pos = byte_pos + line_byte_len
     ::continue::
   end
+end
+
+-------------------------------------------------------------------------------
+-- Markdown annotation (treesitter)
+-------------------------------------------------------------------------------
+--
+-- Inverts the regex approach: instead of "everything is prose except a few
+-- hand-coded structures", walk the tree and mark ONLY genuine prose as text.
+-- Prose lives in `inline` nodes and `pipe_table_cell`s; everything else
+-- (markers, pipes, delimiter rows, code, HTML, link URLs, emphasis markers,
+-- inline code) becomes markup. Inline runs are re-parsed with markdown_inline.
+
+-- Inline node types emitted wholesale as markup. The value is the interpretAs
+-- LanguageTool sees in their place. A dropped, space-surrounded element MUST map
+-- to a non-empty placeholder word, or the two surrounding spaces collapse into a
+-- CONSECUTIVE_SPACES / WHITESPACE_RULE false positive (verified against the API).
+local inline_markup_types = {
+  code_span = "code",
+  uri_autolink = "link",
+  email_autolink = "link",
+  html_tag = "",
+  entity_reference = "",
+  numeric_character_reference = "",
+  backslash_escape = "",
+  emphasis_delimiter = "",
+  code_span_delimiter = "",
+  hard_line_break = "\n",
+  link_destination = "",
+  link_title = "",
+  link_label = "",
+}
+
+-- Inline containers we descend into (their delimiters are markup, text is prose).
+local inline_recurse_types = {
+  emphasis = true, strong_emphasis = true, strikethrough = true, inline = true,
+}
+
+-- Inline link/image nodes: extract the visible label / alt text, hide the rest.
+local inline_link_types = {
+  inline_link = true, full_reference_link = true,
+  collapsed_reference_link = true, shortcut_link = true, image = true,
+}
+
+-- Children of a link/image that are prose (visible text / alt text).
+local inline_link_text_types = {
+  link_text = true, image_description = true,
+}
+
+local walk_inline
+
+--- Emit a byte range of `source` (0-based [from, to)) as prose text.
+local function emit_inline_prose(b, source, from, to, base_byte)
+  if to <= from then return end
+  add_text(b, source:sub(from + 1, to), base_byte + from)
+end
+
+--- Annotate a markdown link/image: label/alt text as prose, everything else
+--- (brackets, parentheses, destination, title, reference label) as markup.
+local function annotate_md_link(b, node, source, base_byte, config)
+  local _, _, pos = node:start()
+  local _, _, node_end = node:end_()
+  for child in node:iter_children() do
+    local _, _, cs = child:start()
+    local _, _, ce = child:end_()
+    if cs > pos then
+      add_markup(b, source:sub(pos + 1, cs), "")
+    end
+    if inline_link_text_types[child:type()] then
+      walk_inline(b, child, source, base_byte, config)
+    else
+      add_markup(b, source:sub(cs + 1, ce), "")
+    end
+    pos = ce
+  end
+  if pos < node_end then
+    add_markup(b, source:sub(pos + 1, node_end), "")
+  end
+end
+
+--- Walk an inline (markdown_inline) subtree. Text between named children is
+--- prose; named children are dispatched by type.
+function walk_inline(b, node, source, base_byte, config)
+  local _, _, pos = node:start()
+  local _, _, node_end = node:end_()
+  for child in node:iter_children() do
+    local _, _, cs = child:start()
+    local _, _, ce = child:end_()
+    if cs > pos then
+      emit_inline_prose(b, source, pos, cs, base_byte)
+    end
+    local t = child:type()
+    local interp = inline_markup_types[t]
+    if interp ~= nil then
+      add_markup(b, source:sub(cs + 1, ce), interp)
+    elseif inline_link_types[t] then
+      annotate_md_link(b, child, source, base_byte, config)
+    elseif inline_recurse_types[t] or child:named_child_count() > 0 then
+      walk_inline(b, child, source, base_byte, config)
+    else
+      -- Anonymous leaf token (e.g. sentence punctuation) — prose.
+      emit_inline_prose(b, source, cs, ce, base_byte)
+    end
+    pos = ce
+  end
+  if pos < node_end then
+    emit_inline_prose(b, source, pos, node_end, base_byte)
+  end
+end
+
+--- Parse a run of inline markdown and annotate prose vs inline markup.
+---@param b table
+---@param text string  the inline source
+---@param base_byte number  buffer byte offset of text[0]
+---@param config table
+local function annotate_inline_content(b, text, base_byte, config)
+  if text == "" then return end
+  local ok, parser = pcall(vim.treesitter.get_string_parser, text, "markdown_inline")
+  if ok and parser then
+    local ok2, trees = pcall(parser.parse, parser)
+    if ok2 and trees and #trees > 0 then
+      walk_inline(b, trees[1]:root(), text, base_byte, config)
+      return
+    end
+  end
+  add_text(b, text, base_byte)
+end
+
+--- Annotate a table cell: trim alignment padding as markup, inline-check the rest.
+local function annotate_table_cell(b, text, base_byte, config)
+  local lead = text:match("^%s*")
+  if #lead == #text then
+    add_markup(b, text, "")
+    return
+  end
+  local trail = text:match("%s*$")
+  local content = text:sub(#lead + 1, #text - #trail)
+  if #lead > 0 then add_markup(b, lead, "") end
+  annotate_inline_content(b, content, base_byte + #lead, config)
+  if #trail > 0 then add_markup(b, trail, "") end
+end
+
+--- Annotate a fenced code block: fences/info string as markup, the code content
+--- handed to the shared code extractor so comments inside are still checked.
+local function annotate_fenced_block(b, node, buf_text, config)
+  local _, _, node_start = node:start()
+  local _, _, node_end = node:end_()
+
+  local lang = ""
+  for child in node:iter_children() do
+    if child:type() == "info_string" then
+      local _, _, is = child:start()
+      local _, _, ie = child:end_()
+      lang = vim.trim(buf_text:sub(is + 1, ie)):match("^(%S*)") or ""
+    end
+  end
+
+  local pos = node_start
+  for child in node:iter_children() do
+    local _, _, cs = child:start()
+    local _, _, ce = child:end_()
+    if cs > pos then
+      add_markup(b, buf_text:sub(pos + 1, cs), "")
+    end
+    if child:type() == "code_fence_content" and lang ~= "" then
+      annotate_fenced_code(b, buf_text:sub(cs + 1, ce), cs, resolve_lang(lang), config)
+    else
+      add_markup(b, buf_text:sub(cs + 1, ce), "")
+    end
+    pos = ce
+  end
+  if pos < node_end then
+    add_markup(b, buf_text:sub(pos + 1, node_end), "")
+  end
+end
+
+local markdown_query = table.concat({
+  "(inline) @lt_inline",
+  "(pipe_table_cell) @lt_cell",
+  "(fenced_code_block) @lt_code",
+  "(minus_metadata) @lt_skip",
+  "(plus_metadata) @lt_skip",
+}, "\n")
+
+--- Build annotation for a markdown buffer using treesitter.
+--- Returns false if the markdown parser is unavailable (caller falls back).
+---@param b table
+---@param bufnr number
+---@param config table
+---@return boolean success
+local function annotate_markdown_ts(b, bufnr, config)
+  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, "markdown")
+  if not ok or not parser then return false end
+  local ok2, trees = pcall(parser.parse, parser)
+  if not ok2 or not trees or #trees == 0 then return false end
+  local ok3, query = pcall(vim.treesitter.query.parse, "markdown", markdown_query)
+  if not ok3 or not query then return false end
+
+  local root = trees[1]:root()
+  local buf_text = util.buf_get_text(bufnr)
+
+  -- Collect prose regions (and frontmatter to skip), sorted by position.
+  local items = {}
+  for id, node in query:iter_captures(root, bufnr, 0, -1) do
+    local _, _, sb = node:start()
+    local _, _, eb = node:end_()
+    table.insert(items, { node = node, start_byte = sb, end_byte = eb, capture = query.captures[id] })
+  end
+  table.sort(items, function(x, y)
+    if x.start_byte == y.start_byte then return x.end_byte > y.end_byte end
+    return x.start_byte < y.start_byte
+  end)
+
+  local pos = 0
+  for _, item in ipairs(items) do
+    if item.start_byte >= pos then
+      -- Gap before this region (markers, pipes, blank lines) → markup, with a
+      -- paragraph break so adjacent blocks are checked as separate segments.
+      if item.start_byte > pos then
+        add_markup(b, buf_text:sub(pos + 1, item.start_byte), "\n\n")
+      end
+      local text = buf_text:sub(item.start_byte + 1, item.end_byte)
+      if item.capture == "lt_inline" then
+        annotate_inline_content(b, text, item.start_byte, config)
+      elseif item.capture == "lt_cell" then
+        annotate_table_cell(b, text, item.start_byte, config)
+      elseif item.capture == "lt_code" then
+        annotate_fenced_block(b, item.node, buf_text, config)
+      else -- lt_skip: frontmatter — never prose
+        add_markup(b, text, "")
+      end
+      pos = item.end_byte
+    end
+  end
+  if pos < #buf_text then
+    add_markup(b, buf_text:sub(pos + 1), "")
+  end
+  return true
 end
 
 -------------------------------------------------------------------------------
@@ -856,8 +1168,14 @@ function M.build(bufnr, config)
   local b = new_builder()
 
   if ft == "markdown" then
-    local text = util.buf_get_text(bufnr)
-    annotate_markdown(b, text, config)
+    -- Prefer treesitter; fall back to the line-based parser if the parser is
+    -- unavailable (ran == false) or the walk errors (ok == false). On error the
+    -- builder may be partly filled, so discard it before falling back.
+    local ok, ran = pcall(annotate_markdown_ts, b, bufnr, config)
+    if not ok or not ran then
+      b = new_builder()
+      annotate_markdown_regex(b, util.buf_get_text(bufnr), config)
+    end
   elseif ft == "org" then
     local text = util.buf_get_text(bufnr)
     annotate_org(b, text, config)
