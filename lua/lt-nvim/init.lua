@@ -9,187 +9,212 @@ local registered = false
 --- Notify the lt-nvim LSP server attached to the current buffer.
 ---@return boolean success true if a server was found
 local function notify_server(method, params)
-  local clients = vim.lsp.get_clients({ name = "lt-nvim", bufnr = 0 })
-  if clients[1] then
-    clients[1]:notify(method, params)
-    return true
-  end
-  return false
+	local clients = vim.lsp.get_clients({ name = "lt-nvim", bufnr = 0 })
+	if clients[1] then
+		clients[1]:notify(method, params)
+		return true
+	end
+	return false
+end
+
+--- Notify every lt-nvim server. The in-memory LSP can run one client (and one
+--- buffer table) per file, so the global on/off switch must reach them all.
+local function notify_all(method, params)
+	local clients = vim.lsp.get_clients({ name = "lt-nvim" })
+	for _, client in ipairs(clients) do
+		client:notify(method, params)
+	end
 end
 
 local subcommands = {
-  recheck = {
-    desc = "Clear cache and re-check current buffer",
-    fn = function()
-      notify_server("lt-nvim/forceCheck", { uri = vim.uri_from_bufnr(0) })
-    end,
-  },
-  toggle = {
-    desc = "Toggle checking for current buffer",
-    fn = function()
-      notify_server("lt-nvim/toggle", {
-        uri = vim.uri_from_bufnr(0),
-        bufnr = vim.api.nvim_get_current_buf(),
-      })
-    end,
-  },
-  enable = {
-    desc = "Enable checking for current buffer",
-    fn = function()
-      notify_server("lt-nvim/enable", {
-        uri = vim.uri_from_bufnr(0),
-        bufnr = vim.api.nvim_get_current_buf(),
-      })
-    end,
-  },
-  disable = {
-    desc = "Disable checking for current buffer",
-    fn = function()
-      notify_server("lt-nvim/disable", { uri = vim.uri_from_bufnr(0) })
-    end,
-  },
-  info = {
-    desc = "Show LanguageTool status for current buffer",
-    fn = function()
-      if not notify_server("lt-nvim/info", { uri = vim.uri_from_bufnr(0) }) then
-        vim.notify("lt-nvim: server not attached to this buffer", vim.log.levels.INFO)
-      end
-    end,
-  },
+	recheck = {
+		desc = "Clear cache and re-check current buffer",
+		fn = function()
+			notify_server("lt-nvim/forceCheck", { uri = vim.uri_from_bufnr(0) })
+		end,
+	},
+	toggle = {
+		desc = "Toggle LanguageTool checking (global)",
+		fn = function()
+			-- Decide here (not per-server) so a broadcast can't have servers flip each
+			-- other back and forth. The switch itself lives in the shared api module.
+			if api.is_enabled() then
+				api.set_enabled(false)
+				notify_all("lt-nvim/disable", {})
+			else
+				api.set_enabled(true)
+				notify_all("lt-nvim/enable", {})
+			end
+		end,
+	},
+	enable = {
+		desc = "Enable LanguageTool checking (global)",
+		fn = function()
+			api.set_enabled(true)
+			notify_all("lt-nvim/enable", {})
+		end,
+	},
+	disable = {
+		desc = "Disable LanguageTool checking (global)",
+		fn = function()
+			api.set_enabled(false)
+			notify_all("lt-nvim/disable", {})
+		end,
+	},
+	info = {
+		desc = "Show LanguageTool status for current buffer",
+		fn = function()
+			if not notify_server("lt-nvim/info", { uri = vim.uri_from_bufnr(0) }) then
+				vim.notify("lt-nvim: server not attached to this buffer", vim.log.levels.INFO)
+			end
+		end,
+	},
 }
 
 --- Returns true if setup() has been called.
 ---@return boolean
 function M.is_setup()
-  return resolved_config ~= nil
+	return resolved_config ~= nil
 end
 
 --- Register and enable the in-memory LSP server. Idempotent.
 --- Called from setup() so attach works regardless of load timing; also invoked
 --- as a fallback from plugin/lt-nvim.lua for configs that never call setup().
 function M.register_lsp()
-  if registered then return end
-  registered = true
+	if registered then
+		return
+	end
+	registered = true
 
-  vim.lsp.config("lt-nvim", {
-    name = "lt-nvim",
-    cmd = require("lt-nvim.server").create,
-    filetypes = M.get_filetypes(),
-    root_markers = {},
-    single_file_support = true,
-  })
+	vim.lsp.config("lt-nvim", {
+		name = "lt-nvim",
+		cmd = require("lt-nvim.server").create,
+		filetypes = M.get_filetypes(),
+		root_markers = {},
+		single_file_support = true,
+	})
 
-  vim.lsp.enable("lt-nvim")
+	vim.lsp.enable("lt-nvim")
 end
 
 --- Set up the plugin. Must be called before the LSP server starts.
 ---@param opts table|nil
 function M.setup(opts)
-  resolved_config = config_mod.resolve(opts)
+	resolved_config = config_mod.resolve(opts)
+	api.set_enabled(resolved_config.start_enabled ~= false)
 
-  -- Register here (not only from plugin/lt-nvim.lua's UIEnter/VeryLazy autocmds)
-  -- so attach works even when the plugin is lazy-loaded after those startup
-  -- events have already fired. Uses the now-resolved enabled_filetypes.
-  M.register_lsp()
+	-- Register here (not only from plugin/lt-nvim.lua's UIEnter/VeryLazy autocmds)
+	-- so attach works even when the plugin is lazy-loaded after those startup
+	-- events have already fired. Uses the now-resolved enabled_filetypes.
+	M.register_lsp()
 
-  if vim.fn.executable("curl") ~= 1 then
-    vim.notify("lt-nvim: curl not found on PATH", vim.log.levels.ERROR)
-    return
-  end
+	if vim.fn.executable("curl") ~= 1 then
+		vim.notify("lt-nvim: curl not found on PATH", vim.log.levels.ERROR)
+		return
+	end
 
-  vim.api.nvim_create_user_command("Lt", function(cmd)
-    local args = vim.split(cmd.args, "%s+", { trimempty = true })
-    local sub = args[1] or ""
+	vim.api.nvim_create_user_command("Lt", function(cmd)
+		local args = vim.split(cmd.args, "%s+", { trimempty = true })
+		local sub = args[1] or ""
 
-    if sub == "" then
-      local entries = {}
-      for name, def in pairs(subcommands) do
-        table.insert(entries, string.format("  %-10s %s", name, def.desc))
-      end
-      table.sort(entries)
-      table.insert(entries, 1, "Lt subcommands:")
-      vim.notify(table.concat(entries, "\n"), vim.log.levels.INFO)
-      return
-    end
+		if sub == "" then
+			local entries = {}
+			for name, def in pairs(subcommands) do
+				table.insert(entries, string.format("  %-10s %s", name, def.desc))
+			end
+			table.sort(entries)
+			table.insert(entries, 1, "Lt subcommands:")
+			vim.notify(table.concat(entries, "\n"), vim.log.levels.INFO)
+			return
+		end
 
-    if sub == "lang" then
-      local lang = args[2]
-      if not lang then
-        vim.notify("Usage: Lt lang <code|auto>", vim.log.levels.INFO)
-        return
-      end
-      notify_server("lt-nvim/setLanguage", {
-        uri = vim.uri_from_bufnr(0),
-        language = lang,
-      })
-      return
-    end
+		if sub == "lang" then
+			local lang = args[2]
+			if not lang then
+				vim.notify("Usage: Lt lang <code|auto>", vim.log.levels.INFO)
+				return
+			end
+			notify_server("lt-nvim/setLanguage", {
+				uri = vim.uri_from_bufnr(0),
+				language = lang,
+			})
+			return
+		end
 
-    local handler = subcommands[sub]
-    if handler then
-      handler.fn()
-    else
-      vim.notify("Lt: unknown subcommand '" .. sub .. "'", vim.log.levels.ERROR)
-    end
-  end, {
-    nargs = "*",
-    desc = "LanguageTool commands",
-    complete = function(_, cmdline)
-      local parts = vim.split(cmdline, "%s+", { trimempty = true })
-      local trailing_space = cmdline:match("%s$") ~= nil
-      local nparts = #parts + (trailing_space and 1 or 0)
-      if nparts <= 2 then
-        local names = vim.tbl_keys(subcommands)
-        table.insert(names, "lang")
-        table.sort(names)
-        return names
-      end
-      if parts[2] == "lang" and nparts <= 3 then
-        return { "auto" }
-      end
-      return {}
-    end,
-  })
+		local handler = subcommands[sub]
+		if handler then
+			handler.fn()
+		else
+			vim.notify("Lt: unknown subcommand '" .. sub .. "'", vim.log.levels.ERROR)
+		end
+	end, {
+		nargs = "*",
+		desc = "LanguageTool commands",
+		complete = function(_, cmdline)
+			local parts = vim.split(cmdline, "%s+", { trimempty = true })
+			local trailing_space = cmdline:match("%s$") ~= nil
+			local nparts = #parts + (trailing_space and 1 or 0)
+			if nparts <= 2 then
+				local names = vim.tbl_keys(subcommands)
+				table.insert(names, "lang")
+				table.sort(names)
+				return names
+			end
+			if parts[2] == "lang" and nparts <= 3 then
+				return { "auto" }
+			end
+			return {}
+		end,
+	})
 end
 
 --- Returns the list of enabled filetypes.
 ---@return string[]
 function M.get_filetypes()
-  if resolved_config then
-    return resolved_config.enabled_filetypes
-  end
-  return config_mod.defaults().enabled_filetypes
+	if resolved_config then
+		return resolved_config.enabled_filetypes
+	end
+	return config_mod.defaults().enabled_filetypes
 end
 
 --- Returns the resolved config table.
 ---@return table
 function M.get_config()
-  if resolved_config then
-    return resolved_config
-  end
-  return config_mod.defaults()
+	if resolved_config then
+		return resolved_config
+	end
+	return config_mod.defaults()
 end
 
 --- Statusline component.
 ---@return string
 function M.statusline()
-  local bufnr = vim.api.nvim_get_current_buf()
-  local clients = vim.lsp.get_clients({ name = "lt-nvim", bufnr = bufnr })
-  if #clients == 0 then
-    return ""
-  end
+	local bufnr = vim.api.nvim_get_current_buf()
+	local clients = vim.lsp.get_clients({ name = "lt-nvim", bufnr = bufnr })
+	if #clients == 0 then
+		return ""
+	end
 
-  if api.is_busy(bufnr) then
-    return "LT …"
-  end
+	if not api.is_enabled() then
+		return "LT off"
+	end
 
-  local diagnostics = vim.diagnostic.get(bufnr, { namespace = vim.lsp.diagnostic.get_namespace(clients[1].id, false) })
-  local count = #diagnostics
-  if count > 0 then
-    return string.format("LT: %d", count)
-  end
+	if api.is_offline() then
+		return "LT ⚠"
+	end
 
-  return "LT"
+	if api.is_busy(bufnr) then
+		return "LT …"
+	end
+
+	local diagnostics =
+		vim.diagnostic.get(bufnr, { namespace = vim.lsp.diagnostic.get_namespace(clients[1].id, false) })
+	local count = #diagnostics
+	if count > 0 then
+		return string.format("LT: %d", count)
+	end
+
+	return "LT"
 end
 
 return M

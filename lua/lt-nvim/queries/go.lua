@@ -1,3 +1,3 @@
 return {
-  "(comment) @lt_comment",
+	"(comment) @lt_comment",
 }

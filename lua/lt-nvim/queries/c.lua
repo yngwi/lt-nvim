@@ -1,4 +1,4 @@
 return {
-  "(comment) @lt_comment",
-  "(string_literal) @lt_string",
+	"(comment) @lt_comment",
+	"(string_literal) @lt_string",
 }
