@@ -1,3 +1,5 @@
+local async = vim.async
+
 local M = {}
 
 local data_dir = vim.fn.stdpath("data") .. "/lt-nvim"
@@ -29,21 +31,18 @@ end
 local function write_file(path, content)
 	local dir = vim.fn.fnamemodify(path, ":h")
 	ensure_dir(dir)
-	vim.uv.fs_open(path, "w", 438, function(err_open, fd)
+	async.run(function()
+		local err_open, fd = async.await(4, vim.uv.fs_open, path, "w", 438)
 		if err_open or not fd then
-			vim.schedule(function()
-				vim.notify("lt-nvim: failed to write " .. path, vim.log.levels.ERROR)
-			end)
-			return
+			async.await(vim.schedule)
+			return vim.notify("lt-nvim: failed to write " .. path, vim.log.levels.ERROR)
 		end
-		vim.uv.fs_write(fd, content, nil, function(err_write)
-			vim.uv.fs_close(fd)
-			if err_write then
-				vim.schedule(function()
-					vim.notify("lt-nvim: failed to write " .. path, vim.log.levels.ERROR)
-				end)
-			end
-		end)
+		local err_write = async.await(4, vim.uv.fs_write, fd, content, nil)
+		vim.uv.fs_close(fd)
+		if err_write then
+			async.await(vim.schedule)
+			vim.notify("lt-nvim: failed to write " .. path, vim.log.levels.ERROR)
+		end
 	end)
 end
 
@@ -80,61 +79,53 @@ end
 ---@param config table  resolved config (needs api_key, username, api_url)
 ---@param callback fun(success: boolean)
 function M.add_word(word, config, callback)
-	if config.tier == "premium" then
-		-- Premium: POST /v2/words/add (piped via stdin to hide credentials)
-		local api_base = config.api_url:gsub("/v2/check$", "")
-		local url = api_base .. "/v2/words/add"
-		local args = { "curl", "-s", "-X", "POST", url, "--data-binary", "@-" }
-		local body = "word="
-			.. vim.uri_encode(word, "rfc2396")
-			.. "&username="
-			.. vim.uri_encode(config.username, "rfc2396")
-			.. "&apiKey="
-			.. vim.uri_encode(config.api_key, "rfc2396")
-		local stdout_data = {}
-		local job_id = vim.fn.jobstart(args, {
-			stdout_buffered = true,
-			on_stdout = function(_, data)
-				if data then
-					vim.list_extend(stdout_data, data)
-				end
-			end,
-			on_exit = function(_, exit_code)
-				vim.schedule(function()
-					-- curl exits 0 even on HTTP 4xx (no -f), so success must be confirmed
-					-- from the response body: LT returns {"added": true} on success.
-					local raw = vim.trim(table.concat(stdout_data, "\n"))
-					local ok, resp = pcall(vim.json.decode, raw)
-					if exit_code == 0 and ok and type(resp) == "table" and resp.added == true then
-						callback(true)
-					else
-						local msg = "unknown error"
-						if ok and type(resp) == "table" and (resp.message or resp.error) then
-							msg = resp.message or resp.error
-						elseif raw ~= "" then
-							msg = raw:sub(1, 200)
-						end
-						vim.notify("lt-nvim: failed to add word to server dictionary: " .. msg, vim.log.levels.WARN)
-						callback(false)
-					end
-				end)
-			end,
-		})
-		if job_id > 0 then
-			vim.fn.chansend(job_id, body)
-			vim.fn.chanclose(job_id, "stdin")
-		else
-			vim.schedule(function()
-				vim.notify("lt-nvim: failed to start curl", vim.log.levels.ERROR)
-				callback(false)
-			end)
-		end
-	else
+	if config.tier ~= "premium" then
 		-- Free: local dictionary
 		local_words[word] = true
 		save_local_words()
-		callback(true)
+		return callback(true)
 	end
+
+	-- Premium: POST /v2/words/add (piped via stdin to hide credentials)
+	local api_base = config.api_url:gsub("/v2/check$", "")
+	local body = "word="
+		.. vim.uri_encode(word, "rfc2396")
+		.. "&username="
+		.. vim.uri_encode(config.username, "rfc2396")
+		.. "&apiKey="
+		.. vim.uri_encode(config.api_key, "rfc2396")
+
+	async.run(function()
+		local started, res = async.pawait(
+			4,
+			vim.system,
+			{ "curl", "-s", "-X", "POST", api_base .. "/v2/words/add", "--data-binary", "@-" },
+			{ stdin = body, text = true }
+		)
+		async.await(vim.schedule)
+
+		if not started then
+			vim.notify("lt-nvim: failed to start curl", vim.log.levels.ERROR)
+			return callback(false)
+		end
+
+		-- curl exits 0 even on HTTP 4xx (no -f), so success must be confirmed
+		-- from the response body: LT returns {"added": true} on success.
+		local raw = vim.trim(res.stdout or "")
+		local ok, resp = pcall(vim.json.decode, raw)
+		if res.code == 0 and ok and type(resp) == "table" and resp.added == true then
+			return callback(true)
+		end
+
+		local msg = "unknown error"
+		if ok and type(resp) == "table" and (resp.message or resp.error) then
+			msg = resp.message or resp.error
+		elseif raw ~= "" then
+			msg = raw:sub(1, 200)
+		end
+		vim.notify("lt-nvim: failed to add word to server dictionary: " .. msg, vim.log.levels.WARN)
+		callback(false)
+	end)
 end
 
 --- Check if a word is in the local dictionary.

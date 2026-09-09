@@ -1,16 +1,14 @@
+local async = vim.async
+
 local M = {}
 
--- Per-buffer job state (one job per buffer, no queue)
-local jobs = {} -- bufnr → job_id
+-- Per-buffer request state (one in-flight check per buffer, no queue)
+local tasks = {} -- bufnr → vim.async.Task
 
 -- Per-buffer "work outstanding" flag: set when an edit schedules a (debounced)
 -- check, cleared once diagnostics are published. Lets the statusline show
 -- progress during the debounce window, before the curl job actually starts.
 local pending = {} -- bufnr → true
-
--- Job IDs we stopped on purpose (supersede/disable/close). Their on_exit fires
--- with a non-zero code, which we must NOT report as a failure.
-local cancelled = {} -- job_id → true
 
 -- Global session switch. When false, automatic checks are gated off; the LSP
 -- stays attached so the statusline and :Lt commands keep working. Kept here
@@ -118,154 +116,134 @@ function M.check(bufnr, annotation_json, config, on_done)
 	M.cancel(bufnr)
 
 	local body = build_post_body(annotation_json, config)
-	local args = {
-		"curl",
-		"-s",
-		"--max-time",
-		"30",
-		"--connect-timeout",
-		"5",
-		"-X",
-		"POST",
-		config.api_url,
-		"--data-binary",
-		"@-",
-	}
-	local stdout_data = {}
-
-	-- Declared before jobstart so on_exit can reference this job's own id.
-	local job_id
-	job_id = vim.fn.jobstart(args, {
-		stdout_buffered = true,
-		on_stdout = function(_, data)
-			if data then
-				vim.list_extend(stdout_data, data)
-			end
-		end,
-		on_exit = function(_, exit_code)
-			-- Intentionally stopped (superseded by a newer check, or the buffer was
-			-- disabled/closed): stay silent and don't invoke on_done.
-			if cancelled[job_id] then
-				cancelled[job_id] = nil
-				return
-			end
-
-			-- Only clear the slot if it still points at us (a newer job may own it).
-			if jobs[bufnr] == job_id then
-				jobs[bufnr] = nil
-			end
-
-			if not vim.api.nvim_buf_is_valid(bufnr) then
-				return
-			end
-
-			if exit_code == 0 then
-				-- Reaching the server (even an API error body) means we're online.
-				if offline then
-					offline = false
-					vim.schedule(function()
-						vim.notify("lt-nvim: connection restored, resuming checks", vim.log.levels.INFO)
-					end)
-				end
-				local raw = table.concat(stdout_data, "\n"):gsub("%s+$", "")
-				if raw == "" then
-					vim.schedule(function()
-						on_done({}, nil)
-					end)
-					return
-				end
-
-				local ok, response = pcall(vim.json.decode, raw)
-				if not ok then
-					vim.schedule(function()
-						vim.notify(
-							"lt-nvim: JSON parse error: " .. tostring(response) .. "\nRaw: " .. raw:sub(1, 200),
-							vim.log.levels.WARN
-						)
-						on_done({}, nil)
-					end)
-					return
-				end
-
-				if response then
-					-- Check for API errors
-					if response.error or (response.status and response.status ~= "ok") then
-						local msg = response.message or response.error or "unknown error"
-						vim.schedule(function()
-							vim.notify("lt-nvim: API error: " .. msg, vim.log.levels.WARN)
-							on_done({}, nil)
-						end)
-						return
+	local task
+	task = async.run(function()
+		local started, res = async.pawait(function(cb)
+			local proc = vim.system({
+				"curl",
+				"-s",
+				"--max-time",
+				"30",
+				"--connect-timeout",
+				"5",
+				"-X",
+				"POST",
+				config.api_url,
+				"--data-binary",
+				"@-",
+			}, { stdin = body, text = true }, cb)
+			-- vim.async closes the handle on resume and waits for `done`
+			return {
+				close = function(_, done)
+					pcall(proc.kill, proc, "sigterm")
+					if done then
+						done()
 					end
-
-					local matches = {}
-					if response.matches then
-						for _, match in ipairs(response.matches) do
-							local n = normalize_match(match)
-							if n then
-								table.insert(matches, n)
-							end
-						end
-					end
-
-					-- Extract detected language
-					local detected_lang = nil
-					if response.language and response.language.detectedLanguage then
-						detected_lang = response.language.detectedLanguage.code
-					elseif response.language then
-						detected_lang = response.language.code
-					end
-
-					vim.schedule(function()
-						on_done(matches, detected_lang)
-					end)
-				else
-					vim.schedule(function()
-						on_done({}, nil)
-					end)
-				end
-			elseif CONNECTION_FAILURE[exit_code] then
-				-- Transport failure (offline / captive portal): pause automatic checks
-				-- and leave the last diagnostics in place instead of clearing them.
-				local was_offline = offline
-				offline = true
-				offline_until = vim.uv.now() + COOLDOWN_MS
-				M.clear_pending(bufnr)
-				if not was_offline then
-					vim.schedule(function()
-						vim.notify("lt-nvim: LanguageTool unreachable, pausing automatic checks", vim.log.levels.INFO)
-					end)
-				end
-			else
-				vim.schedule(function()
-					vim.notify("lt-nvim: API request failed (exit " .. exit_code .. ")", vim.log.levels.WARN)
-					on_done({}, nil)
-				end)
-			end
-		end,
-	})
-
-	if job_id > 0 then
-		vim.fn.chansend(job_id, body)
-		vim.fn.chanclose(job_id, "stdin")
-		jobs[bufnr] = job_id
-	else
-		vim.schedule(function()
-			vim.notify("lt-nvim: failed to start curl", vim.log.levels.ERROR)
-			on_done({}, nil)
+				end,
+			}
 		end)
-	end
+
+		-- curl resumes in a fast event context; everything below notifies or
+		-- touches buffers. A close during the request stops the task here, so a
+		-- superseded check never reaches on_done.
+		async.await(vim.schedule)
+
+		-- Only clear the slot if it still points at us (a newer check may own it).
+		if tasks[bufnr] == task then
+			tasks[bufnr] = nil
+		end
+
+		if not started then
+			vim.notify("lt-nvim: failed to start curl", vim.log.levels.ERROR)
+			return on_done({}, nil)
+		end
+		if not vim.api.nvim_buf_is_valid(bufnr) then
+			return
+		end
+
+		local exit_code = res.code
+
+		if CONNECTION_FAILURE[exit_code] then
+			-- Transport failure (offline / captive portal): pause automatic checks
+			-- and leave the last diagnostics in place instead of clearing them.
+			local was_offline = offline
+			offline = true
+			offline_until = vim.uv.now() + COOLDOWN_MS
+			M.clear_pending(bufnr)
+			if not was_offline then
+				vim.notify("lt-nvim: LanguageTool unreachable, pausing automatic checks", vim.log.levels.INFO)
+			end
+			return
+		end
+
+		if exit_code ~= 0 then
+			vim.notify("lt-nvim: API request failed (exit " .. exit_code .. ")", vim.log.levels.WARN)
+			return on_done({}, nil)
+		end
+
+		-- Reaching the server (even an API error body) means we're online.
+		if offline then
+			offline = false
+			vim.notify("lt-nvim: connection restored, resuming checks", vim.log.levels.INFO)
+		end
+
+		local raw = (res.stdout or ""):gsub("%s+$", "")
+		if raw == "" then
+			return on_done({}, nil)
+		end
+
+		local ok, response = pcall(vim.json.decode, raw)
+		if not ok then
+			vim.notify(
+				"lt-nvim: JSON parse error: " .. tostring(response) .. "\nRaw: " .. raw:sub(1, 200),
+				vim.log.levels.WARN
+			)
+			return on_done({}, nil)
+		end
+		if not response then
+			return on_done({}, nil)
+		end
+
+		-- Check for API errors
+		if response.error or (response.status and response.status ~= "ok") then
+			vim.notify(
+				"lt-nvim: API error: " .. (response.message or response.error or "unknown error"),
+				vim.log.levels.WARN
+			)
+			return on_done({}, nil)
+		end
+
+		local matches = {}
+		for _, match in ipairs(response.matches or {}) do
+			local n = normalize_match(match)
+			if n then
+				table.insert(matches, n)
+			end
+		end
+
+		-- Extract detected language
+		local detected_lang = nil
+		if response.language and response.language.detectedLanguage then
+			detected_lang = response.language.detectedLanguage.code
+		elseif response.language then
+			detected_lang = response.language.code
+		end
+
+		on_done(matches, detected_lang)
+	end)
+
+	tasks[bufnr] = task
 end
 
 --- Cancel any in-flight API work for a buffer.
 ---@param bufnr number
 function M.cancel(bufnr)
-	local id = jobs[bufnr]
-	if id then
-		-- Mark before stopping so the resulting on_exit is treated as intentional.
-		cancelled[id] = true
-		pcall(vim.fn.jobstop, id)
-		jobs[bufnr] = nil
+	local task = tasks[bufnr]
+	if task then
+		-- Closing stops the task at its next checkpoint, so the superseded
+		-- request's continuation never runs and on_done is never called.
+		task:close()
+		tasks[bufnr] = nil
 	end
 end
 
@@ -273,7 +251,7 @@ end
 ---@param bufnr number
 ---@return boolean
 function M.is_checking(bufnr)
-	return jobs[bufnr] ~= nil
+	return tasks[bufnr] ~= nil
 end
 
 --- Global session switch: whether automatic checking is on.
@@ -315,7 +293,7 @@ end
 ---@param bufnr number
 ---@return boolean
 function M.is_busy(bufnr)
-	return jobs[bufnr] ~= nil or pending[bufnr] ~= nil
+	return tasks[bufnr] ~= nil or pending[bufnr] ~= nil
 end
 
 return M

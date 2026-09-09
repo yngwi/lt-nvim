@@ -6,21 +6,21 @@ local M = {}
 ---@param ms number
 ---@return function wrapper, function cancel
 function M.debounce(fn, ms)
-	local timer = vim.uv.new_timer()
+	local task
 	local function wrapper(...)
 		local args = { ... }
-		timer:stop()
-		timer:start(ms, 0, function()
-			timer:stop()
-			vim.schedule(function()
-				fn(unpack(args))
-			end)
+		if task then
+			task:close()
+		end
+		task = vim.async.run(function()
+			vim.async.sleep(ms)
+			fn(unpack(args))
 		end)
 	end
 	local function cancel()
-		timer:stop()
-		if not timer:is_closing() then
-			timer:close()
+		if task then
+			task:close()
+			task = nil
 		end
 	end
 	return wrapper, cancel
