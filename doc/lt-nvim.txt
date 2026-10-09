@@ -11,21 +11,21 @@ CONTENTS                                                    *lt-nvim-contents*
     3. Installation .......................... |lt-nvim-installation|
     4. Configuration ......................... |lt-nvim-configuration|
     5. Commands .............................. |lt-nvim-commands|
-    6. Code Actions .......................... |lt-nvim-code-actions|
+    6. Code actions .......................... |lt-nvim-code-actions|
     7. Statusline ............................ |lt-nvim-statusline|
-    8. Health Check .......................... |lt-nvim-health|
-    9. Custom Queries ........................ |lt-nvim-queries|
-   10. Doc Comment Handling .................. |lt-nvim-doc-comments|
-   11. Data Storage .......................... |lt-nvim-data|
-   12. Rate Limits ........................... |lt-nvim-rate-limits|
+    8. Health check .......................... |lt-nvim-health|
+    9. Custom queries ........................ |lt-nvim-queries|
+   10. Doc comment handling .................. |lt-nvim-doc-comments|
+   11. Data storage .......................... |lt-nvim-data|
+   12. Rate limits ........................... |lt-nvim-rate-limits|
 
 ==============================================================================
 1. INTRODUCTION                                         *lt-nvim-introduction*
 
 lt-nvim provides LanguageTool grammar/spell checking for Neovim. It runs as
 an in-memory LSP server, uses treesitter to extract prose from code files
-(comments, docstrings, template strings), and reports results as native diagnostics
-with code actions.
+(comments, docstrings, template strings), and reports results as native
+diagnostics with code actions.
 
 Supports the free public API, LanguageTool Premium, and self-hosted servers.
 
@@ -41,7 +41,7 @@ Supports the free public API, LanguageTool Premium, and self-hosted servers.
 
 Using lazy.nvim: >lua
     {
-      "lt-nvim",
+      "yngwi/lt-nvim",
       config = function()
         require("lt-nvim").setup()
       end,
@@ -80,7 +80,7 @@ Or pass directly in setup: >lua
 Without credentials, the free API tier is used. The API endpoint is
 auto-selected based on whether credentials are present.
 
-Self-Hosted Server ~
+Self-hosted server ~
                                                         *lt-nvim-selfhosted*
 
 To use a self-hosted LanguageTool server, set `api_url` to your server's
@@ -89,8 +89,8 @@ check endpoint: >lua
       api_url = "http://localhost:8081/v2/check",
     })
 <
-The plugin automatically detects self-hosted mode when the URL doesn't
-match the known LanguageTool cloud endpoints. No credentials are needed.
+The plugin selects the self-hosted tier when the URL doesn't match the
+known LanguageTool cloud endpoints. No credentials are needed.
 
 Self-hosted behavior:
 - Dictionary words are stored locally (server-side words API is not used)
@@ -104,6 +104,11 @@ Options ~
                           `api.languagetoolplus.com` for Premium,
                           `api.languagetool.org` for free.
                           Type: `string|nil`, Default: `nil`
+
+    `start_enabled`         Start with automatic checking on. When false,
+                          checking stays off until `:Lt enable` or
+                          `:Lt toggle`.
+                          Type: `boolean`, Default: `true`
 
     `language`              Language code or "auto" for detection.
                           Type: `string`, Default: `"auto"`
@@ -121,9 +126,9 @@ Options ~
     `picky`                 Enable picky mode (Premium and self-hosted).
                           Type: `boolean`, Default: `false`
 
-    `skip_frontmatter`      Skip YAML frontmatter (--- delimited block
-                          at start of file) in markdown files. Set to
-                          false to check prose in frontmatter values.
+    `skip_frontmatter`      Skip YAML (---) or TOML (+++) frontmatter at
+                          the start of markdown files. Set to false to
+                          check prose in frontmatter values.
                           Type: `boolean`, Default: `true`
 
     `disabled_rules`        Rule IDs to disable.
@@ -141,11 +146,13 @@ Options ~
     `enabled_filetypes`     Filetypes to attach to.
                           Type: `string[]`, Default:
                           `{"text", "markdown", "gitcommit",`
-                          ` "lua", "python",`
-                          ` "rust", "javascript", "javascriptreact",`
+                          ` "lua", "python", "rust",`
+                          ` "javascript", "javascriptreact",`
                           ` "typescript", "typescriptreact",`
                           ` "go", "java", "c", "cpp", "cs",`
-                          ` "php", "bash", "sh", "html"}`
+                          ` "php", "bash", "sh", "html",`
+                          ` "tex", "plaintex", "rst", "typst",`
+                          ` "mail", "org"}`
 
     `user_queries`          Additional treesitter queries per language.
                           See |lt-nvim-queries|.
@@ -159,13 +166,17 @@ All commands are subcommands of `:Lt` with tab completion.
                                                                          *:Lt*
 :Lt {subcommand}        Run a lt-nvim command.
 
-:Lt recheck             Clear cache and re-check current buffer.
+:Lt recheck             Clear cache and re-check current buffer. Retries
+                        at once while automatic checks are paused after
+                        a connection failure.
 
-:Lt toggle              Toggle checking for current buffer.
+:Lt toggle              Toggle automatic checking in all buffers.
 
-:Lt enable              Enable checking for current buffer.
+:Lt enable              Enable automatic checking in all buffers and
+                        check every attached buffer.
 
-:Lt disable             Disable checking for current buffer.
+:Lt disable             Disable checking in all buffers and clear their
+                        diagnostics.
 
 :Lt lang {code}         Set language for current buffer (e.g. `de`,
                         `en-US`). Overrides auto-detection.
@@ -179,6 +190,12 @@ All commands are subcommands of `:Lt` with tab completion.
 Language priority: buffer override (`:Lt lang`) > project config
 (`.lt-nvim.json` `language` field) > global config (`language` option
 in setup) > auto-detection.
+
+While checking is disabled, `:Lt recheck` does nothing and `:Lt lang` takes
+effect on the next check.
+
+When LanguageTool is unreachable, lt-nvim keeps the last diagnostics and
+pauses automatic checks for 60 seconds.
 
 ==============================================================================
 6. CODE ACTIONS                                         *lt-nvim-code-actions*
@@ -194,7 +211,7 @@ Add to dictionary ~
     Premium: adds to server-side dictionary (syncs across devices).
     Free/self-hosted: adds to local dictionary file.
     Shown as: `Add 'word' to server dictionary` (Premium)
-              `Add 'word' to local dictionary` (free tier)
+              `Add 'word' to local dictionary` (free and self-hosted)
 
 Disable rule ~
     Suppress this rule ID for all future checks. Persisted locally.
@@ -213,6 +230,8 @@ Hide false positive ~
     `LT`      Attached, no issues
     `LT: 3`   3 diagnostics in buffer
     `LT …`    Check in progress
+    `LT off`  Checking disabled
+    `LT ⚠`    Automatic checks paused after a connection failure
     (empty)   Not attached to this buffer
 
 Example lualine integration: >lua
@@ -227,7 +246,7 @@ Run `:checkhealth lt-nvim` to verify:
 - curl availability
 - API credentials and tier
 - LSP server status
-- Treesitter parser availability (per enabled filetype)
+- Treesitter parser availability (per enabled filetype that uses one)
 - API endpoint info
 
 ==============================================================================
@@ -262,15 +281,21 @@ Extend existing languages via `user_queries` in setup: >lua
 For doc comments (`///`, `/**`, `---`, etc.), lt-nvim strips `@tag`
 prefixes (like `@param name`) as markup so only the prose description is
 grammar-checked. This works for JSDoc, PHPDoc, Luadoc, Doxygen, and Rust
-doc comment styles.
+doc comment styles. Types (`{string}` in JSDoc, `string` in PHPDoc)
+and Doxygen directions (`@param[in]`) are markup too.
 
 Doc comments are detected by their delimiters:
     `///`, `//!`            Line doc comments (Rust, etc.)
     `---`                   Line doc comments (Lua)
     `/**`, `/*!`            Block doc comments (JSDoc, PHPDoc, Doxygen)
 
-Tags with arguments (e.g. `@param name description`) have the tag and
-argument stripped; only the description text is checked.
+In Lua, `---@param`, `---@field` and `---@return` annotations also hide the
+name and type, so only the description is checked; a `#` before the
+description is hidden too. Other `---@` annotations are markup entirely.
+
+Tag descriptions and comments after code on the same line are lowercase
+fragments by convention, so `UPPERCASE_SENTENCE_START` matches at their
+start are not reported.
 
 ==============================================================================
 11. DATA STORAGE                                             *lt-nvim-data*
@@ -278,8 +303,8 @@ argument stripped; only the description text is checked.
 Global data (shared across all projects) is stored in
 `vim.fn.stdpath("data") .. "/lt-nvim/"`:
 
-    `dictionary.txt`        Word dictionary (free tier only;
-                          Premium uses server-side dictionary)
+    `dictionary.txt`        Word dictionary (free and self-hosted tiers;
+                          Premium uses the server-side dictionary)
 
 Project-local data is stored in the project root (found via `.git`,
 `.hg`, `.svn`, or cwd fallback):

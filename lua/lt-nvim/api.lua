@@ -5,26 +5,23 @@ local M = {}
 -- Per-buffer request state (one in-flight check per buffer, no queue)
 local tasks = {} -- bufnr → vim.async.Task
 
--- Per-buffer "work outstanding" flag: set when an edit schedules a (debounced)
--- check, cleared once diagnostics are published. Lets the statusline show
--- progress during the debounce window, before the curl job actually starts.
+-- Per-buffer "work outstanding" flag: set when an edit schedules a (debounced) check, cleared once diagnostics are
+-- published. Lets the statusline show progress during the debounce window, before the curl job actually starts.
 local pending = {} -- bufnr → true
 
--- Global session switch. When false, automatic checks are gated off; the LSP
--- stays attached so the statusline and :Lt commands keep working. Kept here
--- (not in the server closure) so the statusline can read it directly.
+-- Global session switch. When false, automatic checks are gated off; the LSP stays attached so the statusline and :Lt
+-- commands keep working. Kept here (not in the server closure) so the statusline can read it directly.
 local enabled = true
 
--- Offline circuit breaker. A connection-level curl failure flips `offline` on
--- and suppresses automatic checks until the cooldown elapses; the next check
--- after that probes for recovery. Explicit user rechecks bypass the gate and
--- double as a manual probe.
+-- Offline circuit breaker. A connection-level curl failure flips `offline` on and suppresses automatic checks until the
+-- cooldown elapses; the next check after that probes for recovery. Explicit user rechecks bypass the gate and double as
+-- a manual probe.
 local offline = false
 local offline_until = 0 -- vim.uv.now() timestamp (ms)
 local COOLDOWN_MS = 60000
 
--- curl exit codes meaning "couldn't reach the server" (vs. a real API error,
--- which comes back on a 0 exit with an error body).
+-- curl exit codes meaning "couldn't reach the server" (vs. a real API error, which comes back on a 0 exit with an error
+-- body).
 local CONNECTION_FAILURE = {
 	[5] = true, -- couldn't resolve proxy
 	[6] = true, -- couldn't resolve host
@@ -132,7 +129,6 @@ function M.check(bufnr, annotation_json, config, on_done)
 				"--data-binary",
 				"@-",
 			}, { stdin = body, text = true }, cb)
-			-- vim.async closes the handle on resume and waits for `done`
 			return {
 				close = function(_, done)
 					pcall(proc.kill, proc, "sigterm")
@@ -143,9 +139,8 @@ function M.check(bufnr, annotation_json, config, on_done)
 			}
 		end)
 
-		-- curl resumes in a fast event context; everything below notifies or
-		-- touches buffers. A close during the request stops the task here, so a
-		-- superseded check never reaches on_done.
+		-- curl resumes in a fast event context; everything below notifies or touches buffers. A close during the
+		-- request stops the task here, so a superseded check never reaches on_done.
 		async.await(vim.schedule)
 
 		-- Only clear the slot if it still points at us (a newer check may own it).
@@ -164,8 +159,8 @@ function M.check(bufnr, annotation_json, config, on_done)
 		local exit_code = res.code
 
 		if CONNECTION_FAILURE[exit_code] then
-			-- Transport failure (offline / captive portal): pause automatic checks
-			-- and leave the last diagnostics in place instead of clearing them.
+			-- Transport failure (offline / captive portal): pause automatic checks and leave the last diagnostics in
+			-- place instead of clearing them.
 			local was_offline = offline
 			offline = true
 			offline_until = vim.uv.now() + COOLDOWN_MS
@@ -204,7 +199,6 @@ function M.check(bufnr, annotation_json, config, on_done)
 			return on_done({}, nil)
 		end
 
-		-- Check for API errors
 		if response.error or (response.status and response.status ~= "ok") then
 			vim.notify(
 				"lt-nvim: API error: " .. (response.message or response.error or "unknown error"),
@@ -221,7 +215,6 @@ function M.check(bufnr, annotation_json, config, on_done)
 			end
 		end
 
-		-- Extract detected language
 		local detected_lang = nil
 		if response.language and response.language.detectedLanguage then
 			detected_lang = response.language.detectedLanguage.code
@@ -240,8 +233,6 @@ end
 function M.cancel(bufnr)
 	local task = tasks[bufnr]
 	if task then
-		-- Closing stops the task at its next checkpoint, so the superseded
-		-- request's continuation never runs and on_done is never called.
 		task:close()
 		tasks[bufnr] = nil
 	end
@@ -266,9 +257,8 @@ function M.set_enabled(v)
 	enabled = v and true or false
 end
 
---- True while automatic checks are paused after a connection failure. Once the
---- cooldown elapses this returns false so the next check can probe for recovery,
---- even though the offline flag stays set until a check actually succeeds.
+--- True while automatic checks are paused after a connection failure. Once the cooldown elapses this returns false so
+--- the next check can probe for recovery, even though the offline flag stays set until a check actually succeeds.
 ---@return boolean
 function M.is_offline()
 	if not offline then

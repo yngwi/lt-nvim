@@ -6,11 +6,10 @@ local util = require("lt-nvim.util")
 local M = {}
 
 --- Look up annotation_map to convert an LT offset to a buffer byte.
---- LT offsets count markup + text in the annotation, in UTF-16 code units.
---- For a text entry, the UTF-16 offset within it is converted back to a byte
---- offset into that entry's text; markup entries (where matches never land after
+--- LT offsets count markup + text in the annotation, in UTF-16 code units. For a text entry, the UTF-16 offset within
+--- it is converted back to a byte offset into that entry's text; markup entries (where matches never land after
 --- clamping) fall back to treating the delta as bytes.
----@param annotation_map table[]  sorted list of { full_offset, buffer_byte, is_text, len, text }
+---@param annotation_map table[]  sorted list of { full_offset, buffer_byte, is_text, len, text, fragment }
 ---@param lt_offset number  offset in UTF-16 code units
 ---@return number buffer_byte
 local function map_to_buffer_byte(annotation_map, lt_offset)
@@ -34,6 +33,7 @@ end
 ---@return table PublicClient
 function M.create(dispatchers)
 	local closing = false
+	local next_request_id = 0
 	local buffers = {}
 
 	local function get_config()
@@ -50,13 +50,23 @@ function M.create(dispatchers)
 		return config
 	end
 
-	---------------------------------------------------------------------------
-	-- Diagnostic publishing
-	---------------------------------------------------------------------------
-
 	--- True if a match is a spelling-type match eligible for local-dictionary suppression.
 	local function is_spelling_match(match)
 		return match.category == "TYPOS" or match.rule_id:match("^MORFOLOGIK") or match.rule_id:match("^HUNSPELL")
+	end
+
+	--- True if `offset` starts a doc comment tag description or a comment after code. These are lowercase fragments by
+	--- convention, so a sentence-start match there is noise.
+	local function starts_fragment(annotation_map, offset)
+		for _, e in ipairs(annotation_map) do
+			if e.full_offset > offset then
+				break
+			end
+			if e.full_offset == offset and e.is_text then
+				return e.fragment == true
+			end
+		end
+		return false
 	end
 
 	local function publish_diagnostics(uri, matches, annotation_map)
@@ -79,8 +89,7 @@ function M.create(dispatchers)
 		local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
 		for _, match in ipairs(matches) do
-			-- LT AnnotatedText offsets count ALL bytes: markup + text concatenated.
-			-- Matches may span across markup boundaries, so we clamp to text regions only.
+			-- Matches may span markup, so clamp them to text entries.
 			local match_start = match.offset
 			local match_end = match.offset + match.length
 			local clamped_start = nil
@@ -92,7 +101,6 @@ function M.create(dispatchers)
 				end
 				local entry_end = e.full_offset + e.len
 				if e.is_text and match_start < entry_end and match_end > e.full_offset then
-					-- This text entry overlaps the match
 					local s = math.max(match_start, e.full_offset)
 					local en = math.min(match_end, entry_end)
 					if not clamped_start or s < clamped_start then
@@ -105,6 +113,9 @@ function M.create(dispatchers)
 			end
 
 			if not clamped_start then
+				goto next_match
+			end
+			if match.rule_id == "UPPERCASE_SENTENCE_START" and starts_fragment(annotation_map, clamped_start) then
 				goto next_match
 			end
 
@@ -123,11 +134,10 @@ function M.create(dispatchers)
 				severity = 4
 			end
 
-			-- Extract the matched word from the buffer
 			local matched_word = buf_text:sub(start_buf_byte + 1, end_buf_byte)
 
-			-- Suppress spelling matches for words in the local dictionary.
-			-- (Premium uses a server-side dictionary, so no client-side filtering there.)
+			-- Suppress spelling matches for words in the local dictionary. (Premium uses a server-side dictionary, so
+			-- no client-side filtering there.)
 			if
 				config.tier ~= "premium"
 				and is_spelling_match(match)
@@ -137,14 +147,13 @@ function M.create(dispatchers)
 				goto next_match
 			end
 
-			-- Adjust replacements: when range was clamped (markup bytes removed),
-			-- replacements may have trailing/leading whitespace that no longer applies.
+			-- Adjust replacements: when range was clamped (markup bytes removed), replacements may have
+			-- trailing/leading whitespace that no longer applies.
 			local was_clamped = (clamped_start > match_start) or (clamped_end < match_end)
 			local replacements = match.replacements
 			if was_clamped then
 				replacements = {}
 				for _, r in ipairs(match.replacements) do
-					-- Trim whitespace that corresponds to the clamped markup
 					local adjusted = r
 					if clamped_end < match_end then
 						adjusted = adjusted:gsub("%s+$", "")
@@ -191,10 +200,6 @@ function M.create(dispatchers)
 		})
 	end
 
-	---------------------------------------------------------------------------
-	-- Check triggering
-	---------------------------------------------------------------------------
-
 	local function trigger_check(uri)
 		local buf = buffers[uri]
 		if not buf then
@@ -205,8 +210,8 @@ function M.create(dispatchers)
 			return
 		end
 
-		-- Globally off, or paused after a connection failure: don't hit the network.
-		-- Clear the pending flag so the statusline doesn't sit on "LT …".
+		-- Globally off, or paused after a connection failure: don't hit the network. Clear the pending flag so the
+		-- statusline doesn't sit on "LT …".
 		if not api.is_enabled() or api.is_offline() then
 			api.clear_pending(bufnr)
 			return
@@ -235,7 +240,6 @@ function M.create(dispatchers)
 			trigger_check(uri)
 		end, config.debounce_ms)
 
-		-- Determine project root from the buffer's file path
 		local file_path = vim.uri_to_fname(uri)
 		local project_root = util.find_project_root(file_path)
 
@@ -262,10 +266,6 @@ function M.create(dispatchers)
 		buffers[uri] = nil
 	end
 
-	---------------------------------------------------------------------------
-	-- Code actions
-	---------------------------------------------------------------------------
-
 	local function get_code_actions(uri, params)
 		local buf = buffers[uri]
 		if not buf then
@@ -278,7 +278,6 @@ function M.create(dispatchers)
 
 		for _, entry in ipairs(buf.matches) do
 			local r = entry.range
-			-- Check overlap
 			local overlaps = r.start.line <= req_range["end"].line and r["end"].line >= req_range.start.line
 			if overlaps then
 				if r.start.line == req_range["end"].line and r.start.character > req_range["end"].character then
@@ -293,7 +292,6 @@ function M.create(dispatchers)
 				goto next_match
 			end
 
-			-- 1. Accept suggestion actions
 			for _, replacement in ipairs(entry.match.replacements) do
 				local title
 				if replacement == "" then
@@ -319,8 +317,6 @@ function M.create(dispatchers)
 				})
 			end
 
-			-- 2. Add to dictionary (for spelling-like rules)
-			-- Offer when the matched text is a single word (no spaces)
 			local rid = entry.match.rule_id
 			local word = entry.matched_word
 			local is_spelling = word and #word > 0 and not word:match("%s")
@@ -337,7 +333,6 @@ function M.create(dispatchers)
 				})
 			end
 
-			-- 3. Disable rule
 			table.insert(actions, {
 				title = string.format("Disable rule '%s'", rid),
 				kind = "quickfix",
@@ -348,7 +343,6 @@ function M.create(dispatchers)
 				},
 			})
 
-			-- 4. Hide false positive
 			if entry.match.sentence then
 				table.insert(actions, {
 					title = "Hide false positive",
@@ -366,10 +360,6 @@ function M.create(dispatchers)
 
 		return actions
 	end
-
-	---------------------------------------------------------------------------
-	-- Command execution
-	---------------------------------------------------------------------------
 
 	local function recheck_buffer(uri)
 		local buf = buffers[uri]
@@ -416,13 +406,18 @@ function M.create(dispatchers)
 		end
 	end
 
-	---------------------------------------------------------------------------
-	-- LSP request handler
-	---------------------------------------------------------------------------
+	local function on_request(method, params, callback, notify_reply_callback)
+		next_request_id = next_request_id + 1
+		local id = next_request_id
+		local function reply(err, result)
+			callback(err, result, id)
+			if notify_reply_callback then
+				notify_reply_callback(id)
+			end
+		end
 
-	local function on_request(method, params, callback)
 		if method == "initialize" then
-			callback(nil, {
+			reply(nil, {
 				capabilities = {
 					textDocumentSync = {
 						openClose = true,
@@ -447,22 +442,19 @@ function M.create(dispatchers)
 				api.cancel(buf.bufnr)
 			end
 			closing = true
-			callback(nil, nil)
+			reply(nil, nil)
 		elseif method == "textDocument/codeAction" then
 			local uri = params.textDocument.uri
 			local actions = get_code_actions(uri, params)
-			callback(nil, actions)
+			reply(nil, actions)
 		elseif method == "workspace/executeCommand" then
 			execute_command(params.command, params.arguments or {})
-			callback(nil, nil)
+			reply(nil, nil)
 		else
-			callback({ code = -32601, message = "method not found: " .. method }, nil)
+			reply({ code = -32601, message = "method not found: " .. method }, nil)
 		end
+		return true, id
 	end
-
-	---------------------------------------------------------------------------
-	-- LSP notification handler
-	---------------------------------------------------------------------------
 
 	local function on_notify(method, params)
 		if method == "initialized" then
@@ -489,38 +481,28 @@ function M.create(dispatchers)
 		elseif method == "textDocument/didClose" then
 			local uri = params.textDocument.uri
 			cleanup_buffer(uri)
-
-		-- Custom notifications
 		elseif method == "lt-nvim/forceCheck" then
 			local uri = params.uri
 			local buf = buffers[uri]
-			-- Explicit recheck bypasses the offline gate: it doubles as a manual
-			-- probe for connectivity.
+			-- Explicit recheck bypasses the offline gate: it doubles as a manual probe for connectivity.
 			if api.is_enabled() and buf and vim.api.nvim_buf_is_valid(buf.bufnr) then
 				recheck_buffer(uri)
 			end
 		elseif method == "lt-nvim/enable" then
-			-- Global switch: turn checking on and check every tracked buffer.
 			api.set_enabled(true)
 			for u in pairs(buffers) do
 				trigger_check(u)
 			end
 		elseif method == "lt-nvim/disable" then
-			-- Global switch: turn checking off and clear diagnostics everywhere.
 			api.set_enabled(false)
 			for u, buf in pairs(buffers) do
 				api.cancel(buf.bufnr)
 				api.clear_pending(buf.bufnr)
+				buf.matches = {}
 				dispatchers.notification("textDocument/publishDiagnostics", {
 					uri = u,
 					diagnostics = {},
 				})
-			end
-		elseif method == "lt-nvim/toggle" then
-			if api.is_enabled() then
-				on_notify("lt-nvim/disable", params)
-			else
-				on_notify("lt-nvim/enable", params)
 			end
 		elseif method == "lt-nvim/setLanguage" then
 			local uri = params.uri
@@ -578,7 +560,10 @@ function M.create(dispatchers)
 
 	return {
 		request = on_request,
-		notify = on_notify,
+		notify = function(method, params)
+			on_notify(method, params)
+			return true
+		end,
 		is_closing = function()
 			return closing
 		end,

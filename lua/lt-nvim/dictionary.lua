@@ -8,11 +8,7 @@ local data_dir = vim.fn.stdpath("data") .. "/lt-nvim"
 local local_words = {} -- set: { [word] = true }
 
 -- Project-local state: cached per project root
-local project_configs = {} -- project_root → { disabled_rules = {}, false_positives = {} }
-
--------------------------------------------------------------------------------
--- File I/O helpers
--------------------------------------------------------------------------------
+local project_configs = {} -- project_root → { disabled_rules = {}, false_positives = {}, language = nil }
 
 local function ensure_dir(dir)
 	vim.fn.mkdir(dir, "p")
@@ -46,10 +42,6 @@ local function write_file(path, content)
 	end)
 end
 
--------------------------------------------------------------------------------
--- Global dictionary (word list)
--------------------------------------------------------------------------------
-
 function M.load()
 	local dict_path = data_dir .. "/dictionary.txt"
 	local dict_content = read_file(dict_path)
@@ -74,13 +66,12 @@ local function save_local_words()
 end
 
 --- Add a word to the dictionary.
---- Premium: uses server-side API. Free: uses local file.
+--- Premium: uses the server-side API. Free and self-hosted: use the local file.
 ---@param word string
 ---@param config table  resolved config (needs api_key, username, api_url)
 ---@param callback fun(success: boolean)
 function M.add_word(word, config, callback)
 	if config.tier ~= "premium" then
-		-- Free: local dictionary
 		local_words[word] = true
 		save_local_words()
 		return callback(true)
@@ -109,8 +100,8 @@ function M.add_word(word, config, callback)
 			return callback(false)
 		end
 
-		-- curl exits 0 even on HTTP 4xx (no -f), so success must be confirmed
-		-- from the response body: LT returns {"added": true} on success.
+		-- curl exits 0 even on HTTP 4xx (no -f), so success must be confirmed from the response body: LT returns
+		-- {"added": true} on success.
 		local raw = vim.trim(res.stdout or "")
 		local ok, resp = pcall(vim.json.decode, raw)
 		if res.code == 0 and ok and type(resp) == "table" and resp.added == true then
@@ -135,13 +126,9 @@ function M.has_local_word(word)
 	return local_words[word] == true
 end
 
--------------------------------------------------------------------------------
--- Project-local config (.lt-nvim.json)
--------------------------------------------------------------------------------
-
 --- Load or return cached project config for a given project root.
 ---@param project_root string
----@return table  { disabled_rules = {set}, false_positives = {list} }
+---@return table  { disabled_rules = {set}, false_positives = {list}, language = string|nil }
 local function get_project_config(project_root)
 	if project_configs[project_root] then
 		return project_configs[project_root]
@@ -195,10 +182,6 @@ local function save_project_config(project_root)
 	write_file(project_root .. "/.lt-nvim.json", vim.json.encode(data) .. "\n")
 end
 
--------------------------------------------------------------------------------
--- Disabled rules (project-local)
--------------------------------------------------------------------------------
-
 --- Disable a rule for the given project.
 ---@param rule_id string
 ---@param project_root string
@@ -216,7 +199,7 @@ function M.get_project_language(project_root)
 	return pc.language
 end
 
---- Get all disabled rule IDs for the given project (for merging into API request).
+--- Get all disabled rule IDs for the given project.
 ---@param project_root string
 ---@return string[]
 function M.get_disabled_rules(project_root)
@@ -227,10 +210,6 @@ function M.get_disabled_rules(project_root)
 	end
 	return rules
 end
-
--------------------------------------------------------------------------------
--- False positives (project-local)
--------------------------------------------------------------------------------
 
 --- Hide a false positive (rule + sentence combination).
 ---@param rule_id string
@@ -260,13 +239,7 @@ function M.is_false_positive(rule_id, sentence, project_root)
 	return false
 end
 
--------------------------------------------------------------------------------
--- Filtering
--------------------------------------------------------------------------------
-
 --- Filter matches: remove disabled rules and hidden false positives.
---- Local-dictionary suppression happens later in publish_diagnostics, where the
---- matched word can be extracted correctly from the buffer (see server.lua).
 ---@param matches table[]  normalized matches
 ---@param project_root string
 ---@return table[] filtered
@@ -275,12 +248,10 @@ function M.filter_matches(matches, project_root)
 	local result = {}
 
 	for _, match in ipairs(matches) do
-		-- Skip disabled rules
 		if pc.disabled_rules[match.rule_id] then
 			goto continue
 		end
 
-		-- Skip false positives
 		if M.is_false_positive(match.rule_id, match.sentence, project_root) then
 			goto continue
 		end

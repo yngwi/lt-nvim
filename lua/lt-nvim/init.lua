@@ -17,8 +17,8 @@ local function notify_server(method, params)
 	return false
 end
 
---- Notify every lt-nvim server. The in-memory LSP can run one client (and one
---- buffer table) per file, so the global on/off switch must reach them all.
+--- Notify every lt-nvim server. The in-memory LSP can run one client (and one buffer table) per file, so the global
+--- on/off switch must reach them all.
 local function notify_all(method, params)
 	local clients = vim.lsp.get_clients({ name = "lt-nvim" })
 	for _, client in ipairs(clients) do
@@ -36,8 +36,8 @@ local subcommands = {
 	toggle = {
 		desc = "Toggle LanguageTool checking (global)",
 		fn = function()
-			-- Decide here (not per-server) so a broadcast can't have servers flip each
-			-- other back and forth. The switch itself lives in the shared api module.
+			-- Decide here (not per-server) so a broadcast can't have servers flip each other back and forth. The switch
+			-- itself lives in the shared api module.
 			if api.is_enabled() then
 				api.set_enabled(false)
 				notify_all("lt-nvim/disable", {})
@@ -71,15 +71,7 @@ local subcommands = {
 	},
 }
 
---- Returns true if setup() has been called.
----@return boolean
-function M.is_setup()
-	return resolved_config ~= nil
-end
-
 --- Register and enable the in-memory LSP server. Idempotent.
---- Called from setup() so attach works regardless of load timing; also invoked
---- as a fallback from plugin/lt-nvim.lua for configs that never call setup().
 function M.register_lsp()
 	if registered then
 		return
@@ -103,9 +95,8 @@ function M.setup(opts)
 	resolved_config = config_mod.resolve(opts)
 	api.set_enabled(resolved_config.start_enabled ~= false)
 
-	-- Register here (not only from plugin/lt-nvim.lua's UIEnter/VeryLazy autocmds)
-	-- so attach works even when the plugin is lazy-loaded after those startup
-	-- events have already fired. Uses the now-resolved enabled_filetypes.
+	-- Register here (not only from plugin/lt-nvim.lua's UIEnter/VeryLazy autocmds) so attach works even when the plugin
+	-- is lazy-loaded after those startup events have already fired. Uses the now-resolved enabled_filetypes.
 	M.register_lsp()
 
 	if vim.fn.executable("curl") ~= 1 then
@@ -171,19 +162,16 @@ end
 --- Returns the list of enabled filetypes.
 ---@return string[]
 function M.get_filetypes()
-	if resolved_config then
-		return resolved_config.enabled_filetypes
-	end
-	return config_mod.defaults().enabled_filetypes
+	return M.get_config().enabled_filetypes
 end
 
---- Returns the resolved config table.
+--- Returns the resolved config. Before setup(), resolves the defaults.
 ---@return table
 function M.get_config()
-	if resolved_config then
-		return resolved_config
+	if not resolved_config then
+		resolved_config = config_mod.resolve()
 	end
-	return config_mod.defaults()
+	return resolved_config
 end
 
 --- Statusline component.

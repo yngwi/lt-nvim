@@ -7,8 +7,8 @@ local CLOUD_URLS = {
 
 local defaults = {
 	api_url = nil, -- auto-selected based on credentials
-	-- When false, the LSP still attaches but automatic checking stays off until
-	-- toggled on with :Lt enable / :Lt toggle.
+	-- When false, the LSP still attaches but automatic checking stays off until toggled on with :Lt enable / :Lt
+	-- toggle.
 	start_enabled = true,
 	language = "auto",
 	preferred_variants = nil,
@@ -83,7 +83,6 @@ function M.resolve(opts)
 		config.username = nil
 	end
 
-	-- Auto-select API URL if not explicitly set
 	if not config.api_url then
 		if config.api_key then
 			config.api_url = "https://api.languagetoolplus.com/v2/check"
@@ -102,12 +101,6 @@ function M.resolve(opts)
 	end
 
 	return config
-end
-
---- Returns the default config (for use before setup() is called).
----@return table
-function M.defaults()
-	return vim.deepcopy(defaults)
 end
 
 return M

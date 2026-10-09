@@ -1,7 +1,7 @@
 local M = {}
 
 --- Returns a debounced wrapper and a cancel function.
---- The wrapped function will only fire after `ms` milliseconds of inactivity.
+--- The wrapper fires only after `ms` milliseconds of inactivity.
 ---@param fn function
 ---@param ms number
 ---@return function wrapper, function cancel
@@ -34,8 +34,8 @@ function M.buf_get_text(bufnr)
 	return table.concat(lines, "\n")
 end
 
---- Converts a byte offset in the buffer to an LSP position { line, character }.
---- Both line and character are 0-indexed. Character is in UTF-16 code units.
+--- Converts a byte offset in the buffer to an LSP position { line, character }. Both line and character are 0-indexed.
+--- Character is in UTF-16 code units.
 ---@param bufnr number
 ---@param byte_offset number
 ---@param lines string[]|nil  pre-fetched buffer lines (avoids repeated nvim_buf_get_lines calls)

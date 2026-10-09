@@ -12,6 +12,7 @@ lt-nvim-options	lt-nvim.txt	/*lt-nvim-options*
 lt-nvim-queries	lt-nvim.txt	/*lt-nvim-queries*
 lt-nvim-rate-limits	lt-nvim.txt	/*lt-nvim-rate-limits*
 lt-nvim-requirements	lt-nvim.txt	/*lt-nvim-requirements*
+lt-nvim-selfhosted	lt-nvim.txt	/*lt-nvim-selfhosted*
 lt-nvim-statusline	lt-nvim.txt	/*lt-nvim-statusline*
 lt-nvim.setup()	lt-nvim.txt	/*lt-nvim.setup()*
 lt-nvim.statusline()	lt-nvim.txt	/*lt-nvim.statusline()*

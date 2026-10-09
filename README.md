@@ -1,8 +1,6 @@
 # lt-nvim
 
-LanguageTool grammar/spell checking for Neovim. Runs as an in-memory LSP
-server, uses treesitter to extract prose from code (comments, strings,
-docstrings), and reports results as native diagnostics with code actions.
+LanguageTool grammar/spell checking for Neovim. Runs as an in-memory LSP server, uses treesitter to extract prose from code (comments, strings, docstrings), and reports results as native diagnostics with code actions.
 
 Supports the free public API, LanguageTool Premium, and self-hosted servers.
 
@@ -12,7 +10,7 @@ Supports the free public API, LanguageTool Premium, and self-hosted servers.
 - Code actions: accept suggestion, add to dictionary, disable rule, hide false positive
 - Extracts prose from code files via treesitter (comments, docstrings, template strings)
 - Doc comment `@tag` handling (strips tag prefixes, checks only descriptions)
-- Markdown support with YAML frontmatter skipping and comment checking inside fenced code blocks
+- Markdown support with YAML and TOML frontmatter skipping and comment checking inside fenced code blocks
 - Org-mode support with heading/drawer/directive handling and source block comment extraction
 - LaTeX, reStructuredText, and Typst support via treesitter
 - Uses the [AnnotatedText](https://languagetool.org/http-api/) API to preserve document structure
@@ -50,8 +48,7 @@ For local development:
 }
 ```
 
-The plugin works with any plugin manager. If you don't use lazy.nvim, just
-ensure `require("lt-nvim").setup()` is called before buffers are opened.
+The plugin works with any plugin manager. If you don't use lazy.nvim, just ensure `require("lt-nvim").setup()` is called before buffers are opened.
 
 ## Configuration
 
@@ -73,14 +70,11 @@ require("lt-nvim").setup({
 })
 ```
 
-Credentials are optional. Without them, the plugin uses the free API tier
-(lower rate limits, no `level=picky`). The API endpoint is auto-selected
-based on whether credentials are present.
+Credentials are optional. Without them, the plugin uses the free API tier (lower rate limits, no `level=picky`). The API endpoint is auto-selected based on whether credentials are present.
 
-### Self-Hosted Server
+### Self-hosted server
 
-To use a self-hosted LanguageTool server, set `api_url` to your server's
-check endpoint:
+To use a self-hosted LanguageTool server, set `api_url` to your server's check endpoint:
 
 ```lua
 require("lt-nvim").setup({
@@ -88,8 +82,7 @@ require("lt-nvim").setup({
 })
 ```
 
-The plugin automatically detects self-hosted mode when the URL doesn't match
-the known LanguageTool cloud endpoints. No credentials are needed.
+The plugin selects the self-hosted tier when the URL doesn't match the known LanguageTool cloud endpoints. No credentials are needed.
 
 Self-hosted behavior:
 
@@ -107,6 +100,9 @@ require("lt-nvim").setup({
   -- languagetool.org for free)
   api_url = nil,
 
+  -- Start with automatic checking on (false: off until :Lt enable or :Lt toggle)
+  start_enabled = true,
+
   -- Language to check against ("auto" for automatic detection)
   language = "auto",
 
@@ -119,10 +115,10 @@ require("lt-nvim").setup({
   -- Milliseconds to wait after last edit before checking
   debounce_ms = 1000,
 
-  -- Enable picky mode (premium and self-hosted only, activates additional rules)
+  -- Enable picky mode (Premium and self-hosted only, activates additional rules)
   picky = false,
 
-  -- Skip YAML frontmatter in markdown files (--- delimited block at start)
+  -- Skip YAML (---) or TOML (+++) frontmatter in markdown files (false: check its values)
   skip_frontmatter = true,
 
   -- Rule IDs to disable (e.g. {"WHITESPACE_RULE", "EN_QUOTES"})
@@ -137,7 +133,7 @@ require("lt-nvim").setup({
   -- Category IDs to explicitly enable
   enabled_categories = {},
 
-  -- File types to attach to
+  -- Filetypes to attach to
   enabled_filetypes = {
     "text", "markdown", "gitcommit",
     "lua", "python", "rust",
@@ -158,27 +154,24 @@ require("lt-nvim").setup({
 
 ### Diagnostics
 
-lt-nvim appears as an LSP server. Diagnostics show automatically for
-supported file types. Use your usual diagnostic navigation keymaps
-(`[d`, `]d`, etc.).
+lt-nvim appears as an LSP server. Diagnostics show automatically for supported filetypes. Use your usual diagnostic navigation keymaps (`[d`, `]d`, etc.).
 
 Severity mapping:
 
-- **Error** -- spelling (TYPOS category)
-- **Warning** -- grammar
-- **Hint** -- style, punctuation, and other rules
+- Error: spelling (TYPOS category)
+- Warning: grammar (GRAMMAR category)
+- Hint: style, punctuation, and other rules
 
-### Code Actions
+### Code actions
 
-Trigger code actions with your usual keymap (e.g. `<leader>ca` or
-`vim.lsp.buf.code_action()`). Available actions:
+Trigger code actions with your usual keymap (e.g. `<leader>ca` or `vim.lsp.buf.code_action()`). Available actions:
 
-| Action                                  | Description                                                   |
-| --------------------------------------- | ------------------------------------------------------------- |
-| `'word' → 'fix'`                        | Replace with LT's suggestion                                  |
+| Action | Description |
+| --- | --- |
+| `'word' → 'fix'` | Replace with LanguageTool's suggestion |
 | `Add 'word' to server/local dictionary` | Premium: server-side dictionary. Free/self-hosted: local file |
-| `Disable rule 'RULE_ID'`                | Suppress this rule for all future checks                      |
-| `Hide false positive`                   | Suppress this specific rule+sentence combination              |
+| `Disable rule 'RULE_ID'` | Suppress this rule for all future checks |
+| `Hide false positive` | Suppress this specific rule+sentence combination |
 
 ### Commands
 
@@ -187,14 +180,18 @@ All commands are under `:Lt` with tab completion:
 | Command           | Description                                          |
 | ----------------- | ---------------------------------------------------- |
 | `:Lt recheck`     | Clear cache and re-check current buffer              |
-| `:Lt toggle`      | Toggle checking for current buffer                   |
-| `:Lt enable`      | Enable checking for current buffer                   |
-| `:Lt disable`     | Disable checking for current buffer                  |
+| `:Lt toggle`      | Toggle automatic checking in all buffers             |
+| `:Lt enable`      | Enable automatic checking in all buffers             |
+| `:Lt disable`     | Disable checking and clear diagnostics everywhere    |
 | `:Lt lang <code>` | Set language for current buffer (e.g. `de`, `en-US`) |
 | `:Lt lang auto`   | Reset to automatic language detection                |
 | `:Lt info`        | Show status (language, tier, checking state)         |
 
-## Status Line
+While checking is disabled, `:Lt recheck` does nothing and `:Lt lang` takes effect on the next check.
+
+When LanguageTool is unreachable, lt-nvim keeps the last diagnostics and pauses automatic checks for 60 seconds. `:Lt recheck` retries at once.
+
+### Statusline
 
 Add to lualine:
 
@@ -207,25 +204,25 @@ Shows:
 - `LT` -- attached, no issues
 - `LT: 3` -- 3 diagnostics
 - `LT …` -- check in progress
-- _(empty)_ -- not attached
+- `LT off` -- checking disabled
+- `LT ⚠` -- automatic checks paused after a connection failure
+- (empty) -- not attached
 
-### Health Check
+### Health check
 
 ```vim
 :checkhealth lt-nvim
 ```
 
-Reports on: Neovim version, curl, credentials, LSP server status,
-treesitter parsers, and API info.
+Reports on: Neovim version, curl, credentials, LSP server status, treesitter parsers, and API info.
 
-## How It Works
+## How it works
 
 ### Architecture
 
-lt-nvim runs as an in-memory LSP server via `vim.lsp.config()` and
-`vim.lsp.enable()`. No external process is spawned.
+lt-nvim runs as an in-memory LSP server via `vim.lsp.config()` and `vim.lsp.enable()`. No external process is spawned.
 
-```
+```text
 Neovim LSP client
      |
      v
@@ -235,7 +232,7 @@ server.lua (in-memory LSP server)
   |     v
   |   checker.lua
   |     |-- annotator.lua (treesitter -> AnnotatedText)
-  |     |-- cache (skip if text unchanged)
+  |     |-- cache (skip if annotated content unchanged)
   |     '-- api.lua (curl -> LT API)
   |           |
   |           v
@@ -247,16 +244,11 @@ server.lua (in-memory LSP server)
 
 ### AnnotatedText
 
-lt-nvim builds [AnnotatedText](https://languagetool.org/http-api/) -- a JSON
-structure that marks code as `markup` and prose as `text`. LanguageTool
-checks only the text portions while preserving offset information.
+lt-nvim builds [AnnotatedText](https://languagetool.org/http-api/) -- a JSON structure that marks code as `markup` and prose as `text`. LanguageTool checks only the text portions while preserving offset information.
 
-### Treesitter Queries
+### Treesitter queries
 
-Each supported language has a query file in `lua/lt-nvim/queries/` that
-identifies comment nodes (and docstrings/template strings where
-appropriate). The annotator uses these to determine what is prose (text)
-vs. code (markup).
+Each supported language has a query file in `lua/lt-nvim/queries/` that identifies comment nodes (and docstrings/template strings where appropriate). The annotator uses these to determine what is prose (text) vs. code (markup).
 
 To add support for a new language, add a query file:
 
@@ -280,31 +272,32 @@ require("lt-nvim").setup({
 })
 ```
 
-### Doc Comment Handling
+### Doc comment handling
 
-For doc comments (`///`, `/**`, `---`, etc.), lt-nvim strips `@tag` prefixes
-(like `@param name`) as markup so only the prose description is checked.
-This works for JSDoc, PHPDoc, Luadoc, Doxygen, and Rust doc comment styles.
+For doc comments (`///`, `/**`, `---`, etc.), lt-nvim strips `@tag` prefixes (like `@param name`) as markup so only the prose description is checked. This works for JSDoc, PHPDoc, Luadoc, Doxygen, and Rust doc comment styles. Types (`{string}` in JSDoc, `string` in PHPDoc) and Doxygen directions (`@param[in]`) are markup too.
 
-## Data Storage
+In Lua, `---@param`, `---@field` and `---@return` annotations also hide the name and type, so only the description is checked; a `#` before the description is hidden too. Other `---@` annotations are markup entirely.
 
-**Global** (shared across all projects):
+Tag descriptions and comments after code on the same line are lowercase fragments by convention, so `UPPERCASE_SENTENCE_START` matches at their start are not reported.
 
-```
+## Data storage
+
+Global data, shared across all projects:
+
+```text
 ~/.local/share/nvim/lt-nvim/dictionary.txt    (Linux)
 ~/AppData/Local/nvim-data/lt-nvim/dictionary.txt  (Windows)
 ```
 
-- `dictionary.txt` -- word dictionary (free tier only; Premium uses server-side dictionary)
+- `dictionary.txt` -- word dictionary (free and self-hosted tiers; Premium uses the server-side dictionary)
 
-**Project-local** (per project root, found via `.git`/`.hg`/`.svn` or cwd):
+Project-local data, per project root (found via `.git`, `.hg`, `.svn`, or cwd):
 
-```
+```text
 <project-root>/.lt-nvim.json
 ```
 
-Contains disabled rules, hidden false positives, and an optional language
-override. Example:
+Contains disabled rules, hidden false positives, and an optional language override. Example:
 
 ```json
 {
@@ -316,7 +309,7 @@ override. Example:
 
 This file is safe to commit to version control if your team shares rule preferences.
 
-## Rate Limits
+## Rate limits
 
 |                | Free   | Premium |
 | -------------- | ------ | ------- |

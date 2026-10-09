@@ -17,16 +17,14 @@ function M.check(bufnr, config, cache, project_root, on_done)
 		return
 	end
 
-	-- Cache check: reuse cached matches only when the ENTIRE annotated content
-	-- (markup + text) is unchanged. Keying on prose alone would reuse matches
-	-- whose LT offsets are stale after a markup-only edit (e.g. editing code above
-	-- a flagged comment), placing diagnostics in the wrong spot.
+	-- Cache check: reuse cached matches only when the ENTIRE annotated content (markup + text) is unchanged. Keying on
+	-- prose alone would reuse matches whose LT offsets are stale after a markup-only edit (e.g. editing code above a
+	-- flagged comment), placing diagnostics in the wrong spot.
 	if cache.full_text and cache.full_text == result.full_text and cache.matches then
 		on_done(cache.matches, result.annotation_map, cache.detected_lang)
 		return
 	end
 
-	-- Build the JSON for the data parameter
 	local annotation_json = vim.json.encode({ annotation = result.annotation })
 
 	-- Shallow copy so we can override disabled_rules without mutating the original
@@ -39,10 +37,8 @@ function M.check(bufnr, config, cache, project_root, on_done)
 
 	api.check(bufnr, annotation_json, merged_config, function(matches, detected_lang)
 		-- Post-filter: disabled rules and hidden false positives.
-		-- (Local-dictionary suppression happens in publish_diagnostics.)
 		matches = dictionary.filter_matches(matches, project_root)
 
-		-- Update cache
 		cache.full_text = result.full_text
 		cache.matches = matches
 		cache.annotation_map = result.annotation_map
@@ -52,7 +48,6 @@ function M.check(bufnr, config, cache, project_root, on_done)
 	end)
 end
 
---- Force re-check: clear cache, re-check.
 ---@param bufnr number
 ---@param config table
 ---@param cache table
